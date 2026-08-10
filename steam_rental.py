@@ -31,7 +31,6 @@ from __future__ import annotations
 import csv
 import datetime
 import hashlib
-import hmac
 import importlib
 import io
 import json
@@ -41,7 +40,6 @@ import random
 import re
 import secrets as pysecrets
 import string
-import struct
 import subprocess
 import sys
 import threading
@@ -50,7 +48,7 @@ import traceback
 import uuid
 import zipfile
 import base64
-from base64 import b64encode, b64decode
+from base64 import b64encode
 from typing import TYPE_CHECKING, Any, Callable
 
 import requests
@@ -109,10 +107,127 @@ if TYPE_CHECKING:
         OrderStatusChangedEvent,
     )
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 💛 DONATION BANNER — защита реквизитов автора.
+# Реквизиты закодированы (base64 + SHA-256 подпись) и лежат ВНИЗУ файла в
+# _donation_details(): если их подменить на свои, подпись не сойдётся и
+# баннер НЕ отправится. True = 1 (вкл), False = 0 (выкл).
+# ══════════════════════════════════════════════════════════════════════════════
+
+DONATION_ENABLED = True                # True = 1 (показывать баннер), False = 0
+DONATION_SHOW_ON_START = False         # True = 1 (слать при старте плагина)
+DONATION_DAILY_ENABLED = True          # True = 1 (напоминание раз в сутки)
+DONATION_DAILY_HOUR = 16               # час напоминания (0-23, МСК)
+DONATION_CALLBACK_PREFIX = "srl_dn"    # префикс колбэков кнопок баннера
+DONATION_PLUGIN_NAME = "Steam Rental"  # имя плагина в шапке баннера
+
+_donation_thread: "threading.Thread | None" = None
+_donation_cardinal = None
+
+
+def _donation_tampered() -> bool:
+    """True если реквизиты подменены (подпись не сошлась)."""
+    try:
+        return not _donation_details()
+    except Exception:
+        return True
+
+
+def _donation_banner_text() -> str:
+    """Текст донат-баннера (реквизиты — в <code>, копируются тапом)."""
+    _d = _donation_details()
+    if not _d:
+        return (
+            "⚠️ <b>Баннер повреждён.</b>\n\n"
+            "Реквизиты донат-баннера были подменены — подпись не сошлась, "
+            "поэтому баннер не отправляется. Восстанови оригинальные "
+            "значения в <code>_donation_details()</code> (внизу файла)."
+        )
+    return (
+        f"💛 <b>{DONATION_PLUGIN_NAME}</b> — бесплатный плагин для FunPay!\n"
+        "Если он помог тебе заработать — поддержи автора донатом:\n\n"
+        f"💳 Карта (европейская): <code>{{_d['card']}}</code>\n"
+        f"💎 Gram (TON): <code>{{_d['ton']}}</code>\n"
+        f"💵 USDT (TON): <code>{{_d['usdt_ton']}}</code>\n"
+        f"🪙 USDT (TRC20): <code>{{_d['usdt']}}</code>\n"
+        f"📮 Пожелания и фичи: {{_d['contact']}}\n\n"
+        "Спасибо за поддержку! ❤️\n\n"
+        "🔧 Как убрать баннер: <tg-spoiler>найди в этом файле блок "
+        "«DONATION BANNER» и поставь DONATION_ENABLED = False</tg-spoiler>"
+    )
+
+
+def _donation_banner_kb():
+    """Кнопки-приколы под баннером."""
+    from telebot import types as tbtypes  # type: ignore
+    kb = tbtypes.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        tbtypes.InlineKeyboardButton(
+            "😢 Я нищий",
+            callback_data=f"{DONATION_CALLBACK_PREFIX}:donate_broke"),
+        tbtypes.InlineKeyboardButton(
+            "😎 Я не нищий, но не задоначу",
+            callback_data=f"{DONATION_CALLBACK_PREFIX}:donate_rich"),
+    )
+    return kb
+
+
+def _send_donation_banner(cardinal, chat_id=None) -> bool:
+    """Шлёт донат-баннер оператору (всем authorized_users или конкретному chat_id)."""
+    if not DONATION_ENABLED:
+        return False
+    if _donation_tampered():
+        return False
+    tg = getattr(cardinal, "telegram", None)
+    if not tg or not getattr(tg, "bot", None):
+        return False
+    targets = ([chat_id] if chat_id is not None
+               else list(getattr(tg, "authorized_users", []) or []))
+    if not targets:
+        return False
+    text = _donation_banner_text()
+    kb = None
+    try:
+        kb = _donation_banner_kb()
+    except Exception:
+        kb = None
+    for uid in targets:
+        try:
+            tg.bot.send_message(uid, text, parse_mode="HTML",
+                                reply_markup=kb,
+                                disable_web_page_preview=True)
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "donation banner failed for uid=%s", uid, exc_info=True)
+    return True
+
+
+def _donation_callback_reply(data: str) -> str:
+    """Ответ на кнопки-приколы баннера."""
+    if (data or "").endswith("donate_broke"):
+        return "😢 Нищета — не порок. Разбогатеешь — реквизиты ждут 😉"
+    if (data or "").endswith("donate_rich"):
+        return "😎 Ок, но мы всё равно тебя любим ❤️"
+    return ""
+
+
+def _donation_reminder_loop(cardinal) -> None:
+    """Раз в сутки в DONATION_DAILY_HOUR шлёт шуточное напоминание."""
+    import datetime as _dt
+    while True:
+        try:
+            now = _dt.datetime.now()
+            if now.hour == DONATION_DAILY_HOUR and now.minute == 0:
+                _send_donation_banner(cardinal)
+        except Exception:
+            pass
+        time.sleep(60)
+
+
 # ── Плагин-метаданные (FPC читает эти константы из файла) ────────────────────
 NAME = "Steam Rental"
-VERSION = "2.23.7"
-DEBUG_BUILD = "mobileconf-skip-direct-with-proxy-v5"
+VERSION = "2.23.3"
 DESCRIPTION = (
     "Авто-аренда Steam-аккаунтов на FunPay: выдача логин/пароль после оплаты, "
     "Remote Play (Steam Link PIN) аренда, "
@@ -1005,19 +1120,6 @@ _DEFAULT_TEMPLATES_EN: dict[str, str] = {
 
 _DEFAULT_CONFIG: dict[str, Any] = {
     "change_password_on_expire": True,
-    # Режим освобождения аккаунта при завершении аренды:
-    #   "password" — менять пароль (нужен mobile confirmation / proxy)
-    #   "revoke"   — только отозвать сессии (без mobile confirmation)
-    #   "both"     — сначала отозвать сессии, потом сменить пароль
-    "expire_action": "password",
-    # Fallback proxies for Steam mobile confirmations. Direct connection is
-    # tried first; on HTTP 429 the plugin retries through these proxies in
-    # order. Format: http://user:pass@ip:port or socks5://user:pass@ip:port.
-    "steam_mobile_proxies": [],
-    "steam_mobile_proxies_updated_at": 0,
-    # Persisted mobile confirmation cooldown. Set after Steam returns 429 so
-    # restarts do not immediately spam the same blocked endpoint again.
-    "mobileconf_rate_limited_until": 0,
     # ⚠ По умолчанию ВЫКЛ. До v2.13 этот флаг лежал True, но по факту
     # auto-revoke сессий в end_rental был ХАРДКОДОМ выключен (флаг ничего
     # не делал). Теперь флаг работает: при истечении/завершении аренды
@@ -2937,79 +3039,7 @@ def get_config() -> dict[str, Any]:
 
 
 def save_config(cfg: dict[str, Any]) -> None:
-    current = _load_json(CONFIG_FILE, {})
-    if isinstance(current, dict):
-        cur_proxy_ts = int(current.get("steam_mobile_proxies_updated_at") or 0)
-        new_proxy_ts = int(cfg.get("steam_mobile_proxies_updated_at") or 0)
-        if (cur_proxy_ts > new_proxy_ts
-                and current.get("steam_mobile_proxies") != cfg.get("steam_mobile_proxies")):
-            cfg["steam_mobile_proxies"] = current.get("steam_mobile_proxies", [])
-            cfg["steam_mobile_proxies_updated_at"] = cur_proxy_ts
-        try:
-            cfg["mobileconf_rate_limited_until"] = max(
-                float(current.get("mobileconf_rate_limited_until") or 0),
-                float(cfg.get("mobileconf_rate_limited_until") or 0),
-            )
-        except (TypeError, ValueError):
-            pass
     _save_json(CONFIG_FILE, cfg)
-
-
-def _mobile_proxy_entries(cfg: dict | None = None) -> list[dict[str, Any]]:
-    if cfg is None:
-        cfg = get_config()
-    raw = cfg.get("steam_mobile_proxies") or []
-    if isinstance(raw, str):
-        raw = [x.strip() for x in raw.replace("\r", "\n").split("\n")]
-    if not isinstance(raw, list):
-        return []
-    entries: list[dict[str, Any]] = []
-    for item in raw:
-        if isinstance(item, dict):
-            url = str(item.get("url") or item.get("proxy") or "").strip()
-            if not url:
-                continue
-            entries.append({
-                "url": url,
-                "name": str(item.get("name") or "").strip()[:60],
-                "enabled": bool(item.get("enabled", True)),
-                "proxy_check_ok": item.get("proxy_check_ok"),
-                "proxy_check_ts": int(item.get("proxy_check_ts") or 0),
-                "proxy_check_error": str(item.get("proxy_check_error") or "")[:300],
-                "steam_check_ok": item.get("steam_check_ok"),
-                "steam_check_ts": int(item.get("steam_check_ts") or 0),
-                "steam_check_error": str(item.get("steam_check_error") or "")[:300],
-                "last_check_ok": item.get("last_check_ok"),
-                "last_check_ts": int(item.get("last_check_ts") or 0),
-                "last_check_error": str(item.get("last_check_error") or "")[:300],
-            })
-        else:
-            url = str(item).strip()
-            if url:
-                entries.append({"url": url, "name": "", "enabled": True})
-    return entries
-
-
-def _mobile_proxy_entry_label(entry: dict[str, Any], index: int) -> str:
-    name = str(entry.get("name") or "").strip()
-    return name or f"Proxy #{index}"
-
-
-def _mobileconf_rate_limited_until() -> float:
-    cfg = get_config()
-    try:
-        return float(cfg.get("mobileconf_rate_limited_until") or 0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _set_mobileconf_rate_limit_cooldown(seconds: int | None = None) -> None:
-    global _MOBILECONF_RATE_LIMITED_UNTIL
-    until = time.time() + int(seconds or _MOBILECONF_RATE_LIMIT_COOLDOWN)
-    _MOBILECONF_RATE_LIMITED_UNTIL = until
-    cfg = get_config()
-    cfg["mobileconf_rate_limited_until"] = int(until)
-    save_config(cfg)
 
 
 def _render_template(name: str, *, buyer_id: Any = None,
@@ -3861,12 +3891,6 @@ def _bump_acc_stat(alias: str, **fields: Any) -> None:
 _LOGIN_FAILURE_THRESHOLD = 3
 _CHANGE_PW_FAILURE_THRESHOLD = 2
 
-# Глобальный rate-limit cooldown: если Steam отдал 429 на mobileconf,
-# ждём 30 минут перед следующей попыткой для ЛЮБОГО аккаунта.
-# 429 — на IP, не на аккаунт, поэтому cooldown общий.
-_MOBILECONF_RATE_LIMITED_UNTIL: float = 0.0
-_MOBILECONF_RATE_LIMIT_COOLDOWN = 900   # 15 минут (было 30; Steam сбрасывает раньше)
-
 # Глобальная ссылка на Cardinal для отправки алёртов из тред-сейф-функций.
 _CARDINAL_REF: "Cardinal | None" = None
 
@@ -3980,19 +4004,6 @@ def _track_change_pw_result(alias: str, success: bool,
         if success:
             acc["chpwd_failures"] = 0
         else:
-            # Mobile-confirmation can lag or return a transient Steam non-200.
-            # Do not auto-freeze lots for that class of temporary failure;
-            # keep the last error visible so the operator can retry manually.
-            transient_mobile = (
-                "ConfirmationExpected" in (error_msg or "")
-                or "нет confirmation" in (error_msg or "")
-                or "429" in (error_msg or "")
-                or "Rate limit" in (error_msg or "")
-            )
-            if transient_mobile:
-                acc["chpwd_last_error"] = (error_msg or "")[:300]
-                upsert_account(acc)
-                return
             acc["chpwd_failures"] = acc.get("chpwd_failures", 0) + 1
             fail_count = acc["chpwd_failures"]
             acc["chpwd_last_error"] = (error_msg or "")[:300]
@@ -4044,65 +4055,8 @@ _USER_AGENT = (
 )
 
 
-def _short_proxy_error(exc: Exception) -> str:
-    raw = str(exc)
-    low = raw.lower()
-    if isinstance(exc, requests.exceptions.ProxyError):
-        if "407" in raw or "proxy authentication" in low:
-            return "proxy auth failed"
-        if "connection refused" in low:
-            return "proxy refused connection"
-        if "timed out" in low or "timeout" in low:
-            return "proxy timeout"
-        if "name or service not known" in low or "temporary failure" in low:
-            return "proxy DNS error"
-        return "proxy connection failed"
-    if isinstance(exc, requests.exceptions.ConnectTimeout):
-        return "connection timeout"
-    if isinstance(exc, requests.exceptions.ReadTimeout):
-        return "read timeout"
-    if isinstance(exc, requests.exceptions.SSLError):
-        return "SSL/connect error"
-    if "407" in raw:
-        return "proxy auth failed"
-    if "timed out" in low or "timeout" in low:
-        return "timeout"
-    if "connection refused" in low:
-        return "connection refused"
-    if "max retries exceeded" in low:
-        return "proxy unreachable"
-    return raw[:120]
-
-
-def _short_http_body(text: str) -> str:
-    text = (text or "").strip().replace("\n", " ").replace("\r", " ")
-    title = re.search(r"<title[^>]*>(.*?)</title>", text, re.I | re.S)
-    if title:
-        title_text = re.sub(r"\s+", " ", title.group(1)).strip()
-        return f"title={title_text!r} body={text[:180]!r}"
-    return text[:240]
-
-
 class SteamError(RuntimeError):
     pass
-
-
-def _steam_session_from_acc(acc: dict[str, Any]) -> "SteamSession":
-    """Создаёт SteamSession из аккаунта, извлекая device_id из maFile.
-    ВАЖНО: device_id из maFile должен совпадать с тем, что привязан к
-    аккаунту в Steam. steampy генерирует свой device_id — он НЕ совпадает,
-    и Steam отдаёт 'Invalid authenticator' → 429 после многих попыток."""
-    mafile = acc.get("mafile") or {}
-    return SteamSession(
-        account_name=acc.get("account_name", ""),
-        password=acc.get("password", ""),
-        shared_secret=acc.get("shared_secret"),
-        identity_secret=acc.get("identity_secret"),
-        steamid=acc.get("steamid"),
-        device_id=mafile.get("device_id") or acc.get("device_id"),
-        family_pin=(acc.get("family_pin") or acc.get("parental_pin") or
-                    acc.get("steam_family_pin")),
-    )
 
 
 class SteamSession:
@@ -4113,9 +4067,7 @@ class SteamSession:
 
     def __init__(self, account_name: str, password: str,
                  shared_secret: str, identity_secret: str,
-                 steamid: str | None = None,
-                 device_id: str | None = None,
-                 family_pin: str | None = None):
+                 steamid: str | None = None):
         from steampy import guard as steam_guard
 
         self.account_name = account_name
@@ -4123,44 +4075,9 @@ class SteamSession:
         self.shared_secret = shared_secret
         self.identity_secret = identity_secret
         self.steamid: str | None = steamid
-        self.device_id: str | None = device_id
-        self.family_pin: str | None = str(family_pin).strip() if family_pin else None
         self.sess = requests.Session()
         self.sess.headers.update({"User-Agent": _USER_AGENT})
         self._guard = steam_guard
-        self._active_proxy: str | None = None
-        self.last_revoke_details: list[str] = []
-
-    def _set_proxy(self, proxy: str | None) -> None:
-        proxy = (proxy or "").strip()
-        self._active_proxy = proxy or None
-        if proxy:
-            self.sess.proxies = {"http": proxy, "https": proxy}
-            shown = proxy.split("@", 1)[-1] if "@" in proxy else proxy
-            LOGGER.info("steam_rental: Steam requests for %s use proxy %s",
-                        self.account_name, shown)
-        else:
-            self.sess.proxies = {}
-
-    @staticmethod
-    def _mobile_proxy_list() -> list[str]:
-        cfg = get_config()
-        raw = cfg.get("steam_mobile_proxies") or []
-        if isinstance(raw, str):
-            raw = [x.strip() for x in raw.replace("\r", "\n").split("\n")]
-        if not isinstance(raw, list):
-            return []
-        proxies: list[str] = []
-        for item in raw:
-            if isinstance(item, dict):
-                if not item.get("enabled", True):
-                    continue
-                url = str(item.get("url") or item.get("proxy") or "").strip()
-            else:
-                url = str(item).strip()
-            if url:
-                proxies.append(url)
-        return proxies
 
     def generate_2fa_code(self) -> str:
         return self._guard.generate_one_time_code(self.shared_secret)
@@ -4168,101 +4085,7 @@ class SteamSession:
     def get_guard_code(self) -> str:
         return self.generate_2fa_code()
 
-    def _mobile_device_id(self) -> str:
-        if self.device_id:
-            return self.device_id
-        h = hashlib.sha1(str(self.steamid).encode()).hexdigest()
-        return "android:" + "-".join(
-            [h[:8], h[8:12], h[12:16], h[16:20], h[20:32]])
-
     def login(self) -> None:
-        proxy_pool = self._mobile_proxy_list()
-        attempts = [None]
-        attempts.extend(p for p in proxy_pool if p)
-        last_exc: Exception | None = None
-
-        for proxy in attempts:
-            self._set_proxy(proxy)
-            try:
-                self._login_once()
-                return
-            except Exception as exc:
-                last_exc = exc
-                LOGGER.warning(
-                    "steam_rental: login failed for %s via %s: %s",
-                    self.account_name,
-                    "direct IP" if proxy is None else self._proxy_short_label(proxy),
-                    _short_proxy_error(exc))
-                continue
-
-        if last_exc is not None:
-            raise last_exc
-
-    def login_steampy(self) -> None:
-        """Fallback login through steampy; keeps our requests.Session cookies."""
-        from steampy.client import SteamClient
-
-        guard_json = json.dumps({
-            "shared_secret": self.shared_secret,
-            "identity_secret": self.identity_secret,
-            "steamid": self.steamid or "",
-            "device_id": self.device_id or "",
-        })
-        proxy = self._active_proxy
-        proxies = {"http": proxy, "https": proxy} if proxy else None
-        client = SteamClient("", username=self.account_name,
-                             password=self.password,
-                             steam_guard=guard_json,
-                             proxies=proxies)
-        try:
-            client.login()
-        except KeyError as exc:
-            raise SteamError(
-                "steampy login failed: Steam не вернул обязательное поле "
-                f"{exc!s}. Обычно это rate limit, неверный пароль/Guard, "
-                "Family View/child restriction или нестандартный challenge.") from exc
-        except Exception as exc:
-            raise SteamError(f"steampy login failed: {_short_proxy_error(exc)}") from exc
-        self.sess.cookies.update(client._session.cookies)
-        try:
-            self.sess.headers.update(client._session.headers)
-        except Exception:
-            pass
-        LOGGER.info("steam_rental: steampy login OK для %s", self.account_name)
-
-    def unlock_family_view(self) -> bool:
-        if not self.family_pin:
-            self.last_revoke_details.append(
-                "family_view: locked, no family_pin/parental_pin in account")
-            return False
-        sessionid = self.sessionid_for(_STORE)
-        if not sessionid:
-            self.last_revoke_details.append("family_view: no store sessionid")
-            return False
-        try:
-            r = self.sess.post(
-                f"{_STORE}/parental/ajaxunlock",
-                data={"pin": self.family_pin, "sessionid": sessionid},
-                timeout=15,
-                headers={"Referer": f"{_STORE}/parental/unlock",
-                         "Origin": _STORE,
-                         "X-Requested-With": "XMLHttpRequest"})
-            body = _short_http_body(r.text or "")
-            self.last_revoke_details.append(
-                f"family_view.unlock: status={r.status_code} body={body!r}")
-            if r.status_code >= 400:
-                return False
-            try:
-                data = r.json()
-                return bool(data.get("success") or data.get("eresult") == 1)
-            except Exception:
-                return "success" in (r.text or "").lower()
-        except Exception as exc:
-            self.last_revoke_details.append(
-                f"family_view.unlock: error={_short_proxy_error(exc)}")
-            return False
-
-    def _login_once(self) -> None:
         from rsa import PublicKey, encrypt as rsa_encrypt
 
         rsa_resp = self.sess.get(
@@ -4284,18 +4107,11 @@ class SteamSession:
         client_id = None
         request_id = None
         steam_id = None
-        begin_summary = ""
         for _attempt in range(3):
             resp = self.sess.post(
                 f"{_API}/IAuthenticationService/BeginAuthSessionViaCredentials/v1/",
                 data=begin_data, timeout=15)
             rd = resp.json().get("response", {}) or {}
-            begin_summary = str({
-                "status": resp.status_code,
-                "steamid": rd.get("steamid"),
-                "allowed_confirmations": rd.get("allowed_confirmations"),
-                "extended_error_message": rd.get("extended_error_message"),
-            })[:500]
             client_id = rd.get("client_id")
             request_id = rd.get("request_id")
             steam_id = rd.get("steamid")
@@ -4303,48 +4119,27 @@ class SteamSession:
                 break
             time.sleep(1)
         if not client_id:
-            raise SteamError(
-                "Steam не вернул client_id. Если пароль точно верный, "
-                "Steam не принимает этот IP/proxy для логина или требует "
-                f"доп. подтверждение. Begin: {begin_summary}")
+            raise SteamError("Steam не вернул client_id (возможно, неверный пароль)")
         steam_id = str(steam_id)
 
         code = self.generate_2fa_code()
-        guard_resp = self.sess.post(
+        self.sess.post(
             f"{_API}/IAuthenticationService/UpdateAuthSessionWithSteamGuardCode/v1/",
             data={"client_id": client_id, "steamid": steam_id,
                   "code_type": 3, "code": code}, timeout=15)
-        try:
-            guard_json = guard_resp.json()
-        except Exception:
-            guard_json = {"raw": (guard_resp.text or "")[:300]}
-        guard_summary = f"status={guard_resp.status_code} body={str(guard_json)[:500]}"
-        if guard_resp.status_code >= 400 or guard_json.get("error"):
-            raise SteamError(
-                "Steam Guard code rejected: "
-                f"{guard_summary}. Begin: {begin_summary}")
 
         refresh_token = None
-        last_poll: str = ""
         for _ in range(10):
             poll = self.sess.post(
                 f"{_API}/IAuthenticationService/PollAuthSessionStatus/v1/",
                 data={"client_id": client_id, "request_id": request_id},
                 timeout=15)
-            try:
-                poll_json = poll.json()
-            except Exception:
-                poll_json = {"raw": (poll.text or "")[:300]}
-            last_poll = f"status={poll.status_code} body={str(poll_json)[:300]}"
-            refresh_token = poll_json.get("response", {}).get("refresh_token")
+            refresh_token = poll.json().get("response", {}).get("refresh_token")
             if refresh_token:
                 break
             time.sleep(2)
         if not refresh_token:
-            raise SteamError(
-                "Не удалось получить refresh_token (Steam Guard fail). "
-                f"Begin: {begin_summary}. Guard update: {guard_summary}. "
-                f"Last poll: {last_poll}")
+            raise SteamError("Не удалось получить refresh_token (Steam Guard fail)")
 
         self.sess.get(_COMMUNITY, timeout=15)
         sessionid = self.sess.cookies.get("sessionid", "")
@@ -4377,64 +4172,30 @@ class SteamSession:
         return self.sess.cookies.get("sessionid", "") or ""
 
     def revoke_all_other_sessions(self) -> bool:
-        store_sessionid = self.sessionid_for(_STORE)
-        community_sessionid = self.sessionid_for(_COMMUNITY)
-        if not store_sessionid:
+        sessionid = self.sessionid_for(_STORE)
+        if not sessionid:
             raise SteamError("Нет sessionid для store.steampowered.com")
-        try:
-            warmup = self.sess.get(f"{_STORE}/twofactor/manage", timeout=15,
-                                   headers={"Referer": f"{_STORE}/account/"})
-            if "Family View" in (warmup.text or ""):
-                self.last_revoke_details = []
-                self.unlock_family_view()
-        except Exception:
-            LOGGER.debug("steam_rental: revoke warmup manage page failed",
-                         exc_info=True)
-        family_details = list(self.last_revoke_details)
         endpoints = [
-            ("store.manage_action", f"{_STORE}/twofactor/manage_action",
-             {"action": "deauthorize", "sessionid": store_sessionid},
-             {"Referer": f"{_STORE}/twofactor/manage",
-              "Origin": _STORE,
-              "X-Requested-With": "XMLHttpRequest"}),
-            ("community.edit_info", f"{_COMMUNITY}/profiles/{self.steamid}/edit/info",
-             {"sessionID": community_sessionid or store_sessionid,
-              "type": "deauthorize"},
-             {"Referer": f"{_COMMUNITY}/profiles/{self.steamid}/edit/settings"}),
+            (f"{_STORE}/twofactor/manage_action",
+             {"action": "deauthorize", "sessionid": sessionid}),
+            (f"{_COMMUNITY}/profiles/{self.steamid}/edit/info",
+             {"sessionID": sessionid, "type": "deauthorize"}),
         ]
         ok = False
-        details: list[str] = family_details
-        for label, url, data, headers in endpoints:
+        for url, data in endpoints:
             try:
                 r = self.sess.post(url, data=data, timeout=15,
-                                    headers=headers)
-                body = _short_http_body(r.text or "")
-                details.append(f"{label}: status={r.status_code} body={body!r}")
+                                    headers={"Referer": f"{_STORE}/account/"})
                 if r.status_code < 400:
                     ok = True
-            except Exception as exc:
-                details.append(f"{label}: error={_short_proxy_error(exc)}")
+            except Exception:
                 LOGGER.debug("steam_rental: revoke endpoint %s failed", url,
-                              exc_info=True)
-        self.last_revoke_details = details
-        if not ok:
-            LOGGER.warning("steam_rental: revoke failed for %s: %s",
-                           self.account_name, " | ".join(details) or "no details")
+                             exc_info=True)
         return ok
 
     def change_password(self, new_password: str) -> None:
         from rsa import PublicKey, encrypt as rsa_encrypt
         from urllib.parse import urlparse, parse_qs
-
-        # Если Steam rate-limited — не начинаем wizard (бессмысленно тратить запросы)
-        now = time.time()
-        limited_until = max(_MOBILECONF_RATE_LIMITED_UNTIL,
-                            _mobileconf_rate_limited_until())
-        if now < limited_until and not self._mobile_proxy_list():
-            wait_min = int((limited_until - now) / 60)
-            raise SteamError(
-                f"Steam rate-limit: mobileconf недоступен ещё {wait_min} мин. "
-                f"Подождите и попробуйте снова.")
 
         sid_help = self.sessionid_for(_HELP)
         if not sid_help:
@@ -4473,10 +4234,6 @@ class SteamSession:
         if r3_json.get("errorMsg"):
             raise SteamError(f"AjaxSendAccountRecoveryCode: {r3_json['errorMsg']}")
 
-        # Steam нужно время чтобы создать confirmation после AjaxSendAccountRecoveryCode.
-        # Без задержки mobileconf/getlist может вернуть пусто или 429.
-        # 8 секунд — минимальный баланс между ожиданием и надёжностью.
-        time.sleep(8)
         self._mobile_confirm_recovery(params["s"])
 
         self.sess.post(
@@ -4572,172 +4329,43 @@ class SteamSession:
         except Exception:
             return {}
 
-    @staticmethod
-    def _proxy_short_label(proxy: str) -> str:
-        p = str(proxy or "").strip()
-        if "@" in p:
-            return "с proxy " + p.split("@", 1)[-1]
-        return p
-
     def _mobile_confirm_recovery(self, s_id: str) -> None:
+        from steampy.confirmation import ConfirmationExecutor
+
         if not self.steamid:
             raise SteamError("Нет steamid — нужно сначала залогиниться")
 
-        # Проверяем глобальный cooldown
-        now = time.time()
-        limited_until = max(_MOBILECONF_RATE_LIMITED_UNTIL,
-                            _mobileconf_rate_limited_until())
-        if now < limited_until and not self._mobile_proxy_list():
-            wait_min = int((limited_until - now) / 60)
-            raise SteamError(
-                f"Steam rate-limit: mobileconf недоступен ещё {wait_min} мин. "
-                f"Подождите и попробуйте снова.")
-
-        proxy_pool = self._mobile_proxy_list()
-        attempts: list[str | None] = [None]
-        if self._active_proxy:
-            attempts.append(self._active_proxy)
-        attempts.extend(p for p in proxy_pool if p and p not in attempts)
-        attempt_log: list[str] = []
-        last_detail = ""
-
-        proxy_idx = 0
-        for proxy in attempts:
-            if proxy is None:
-                label = "прямой IP"
-            else:
-                proxy_idx += 1
-                label = f"proxy #{proxy_idx} {self._proxy_short_label(proxy)}"
-            confirm_sess = self
+        ce = ConfirmationExecutor(self.identity_secret, self.steamid, self.sess)
+        last_exc: Exception | None = None
+        for _try in range(6):
             try:
-                if proxy != self._active_proxy:
-                    # Mobile confirmation can be accepted from a separate
-                    # authenticated web session. Do a fresh login instead of
-                    # switching IP inside the existing Help wizard session.
-                    confirm_sess = SteamSession(
-                        account_name=self.account_name,
-                        password=self.password,
-                        shared_secret=self.shared_secret,
-                        identity_secret=self.identity_secret,
-                        steamid=self.steamid,
-                        device_id=self.device_id,
-                        family_pin=self.family_pin,
-                    )
-                    confirm_sess._set_proxy(proxy)
-                    confirm_sess._login_once()
-                else:
-                    self._set_proxy(proxy)
-                ts = int(time.time())
-                device_id = confirm_sess._mobile_device_id()
-                buf = struct.pack(">Q", ts) + b"conf"
-                ckey = b64encode(hmac.new(
-                    b64decode(confirm_sess.identity_secret), buf,
-                    digestmod=hashlib.sha1).digest()).decode()
-
-                params = {
-                    "p": device_id, "a": str(confirm_sess.steamid),
-                    "k": ckey, "t": str(ts), "m": "android", "tag": "conf",
-                }
-                headers = {
-                    "X-Requested-With": "com.valvesoftware.android.steam.community",
-                }
-                resp = confirm_sess.sess.get(
-                    "https://steamcommunity.com/mobileconf/getlist",
-                    params=params, headers=headers, timeout=15)
-                for _ in range(3):
-                    if resp.status_code != 429:
-                        break
-                    time.sleep(3)
-                    ts = int(time.time())
-                    buf = struct.pack(">Q", ts) + b"conf"
-                    ckey = b64encode(hmac.new(
-                        b64decode(confirm_sess.identity_secret), buf,
-                        digestmod=hashlib.sha1).digest()).decode()
-                    params["k"] = ckey
-                    params["t"] = str(ts)
-                    resp = confirm_sess.sess.get(
-                        "https://steamcommunity.com/mobileconf/getlist",
-                        params=params, headers=headers, timeout=15)
-                body = getattr(resp, "text", "") or ""
-                last_detail = (
-                    f"status={getattr(resp, 'status_code', '?')} "
-                    f"body={body[:160]!r}")
-
-                if resp.status_code == 429:
-                    # 429 = rate-limit на этом IP. Пробуем следующий proxy.
-                    # Глобальный cooldown ставим только если это последняя попытка.
-                    attempt_log.append(f"{label}: 429 Rate limit")
-                    LOGGER.warning(
-                        "steam_rental: mobileconf 429 для %s через %s",
-                        self.account_name, label)
-                    continue
-                if resp.status_code != 200:
-                    attempt_log.append(f"{label}: HTTP {resp.status_code}")
-                    continue
-
-                data = json.loads(body or "{}")
-                confs = data.get("conf", [])
-
-                # Ищем confirmation с creator_id == s_id (wizard session)
-                target = None
-                for conf in confs:
-                    if str(conf.get("creator_id", "")) == str(s_id):
-                        target = conf
-                        break
-                if target is None and confs:
-                    target = confs[-1]
-                if target is None:
-                    attempt_log.append(f"{label}: нет confirmation")
-                    continue
-
-                # Подтверждаем (ajaxop)
-                ts2 = int(time.time())
-                buf2 = struct.pack(">Q", ts2) + b"allow"
-                ckey2 = b64encode(hmac.new(
-                    b64decode(confirm_sess.identity_secret), buf2,
-                    digestmod=hashlib.sha1).digest()).decode()
-                params2 = {
-                    "p": device_id, "a": str(confirm_sess.steamid),
-                    "k": ckey2, "t": str(ts2), "m": "android",
-                    "tag": "allow", "op": "allow",
-                    "cid": str(target["id"]),
-                    "ck": str(target["nonce"]),
-                }
-                headers2 = {"X-Requested-With": "XMLHttpRequest"}
-                resp2 = confirm_sess.sess.get(
-                    "https://steamcommunity.com/mobileconf/ajaxop",
-                    params=params2, headers=headers2, timeout=15)
-                try:
-                    res = resp2.json()
-                except Exception:
-                    res = {}
-                if res.get("success") is False:
-                    raise SteamError(f"mobile ajaxop failed: {res}")
-                LOGGER.info(
-                    "steam_rental: mobile confirmation OK для %s через %s",
-                    self.account_name, label)
-                return
-            except SteamError:
-                raise
+                confs = ce._get_confirmations()
             except Exception as exc:
-                err_text = _short_proxy_error(exc)
-                attempt_log.append(f"{label}: {err_text}")
-
-        details = " | ".join(attempt_log) or "нет попыток"
-
-        # Все попытки провалились. Если среди них был 429 — ставим глобальный
-        # cooldown, чтобы не долбить Steam зря со следующего аккаунта.
-        if any("429" in e for e in attempt_log):
-            _set_mobileconf_rate_limit_cooldown()
-            LOGGER.warning(
-                "steam_rental: все proxy получили 429 для %s — глобальный "
-                "cooldown %d мин",
-                self.account_name,
-                _MOBILECONF_RATE_LIMIT_COOLDOWN // 60)
-
+                last_exc = exc
+                time.sleep(2)
+                continue
+            target = None
+            for c in confs:
+                cid = getattr(c, "data_accept", None) or getattr(c, "creator_id", None) \
+                    or getattr(c, "creator", None)
+                if cid and str(cid) == str(s_id):
+                    target = c
+                    break
+            if target is None and confs:
+                target = confs[-1]
+            if target is not None:
+                try:
+                    ce._send_confirmation(target)
+                    return
+                except Exception as exc:
+                    last_exc = exc
+                    time.sleep(2)
+            else:
+                time.sleep(2)
         raise SteamError(
-            f"Не удалось подтвердить запрос смены пароля через mobile. "
-            f"Попытки: {details} | {last_detail}")
+            f"Не удалось подтвердить запрос смены пароля через mobile "
+            f"({type(last_exc).__name__ if last_exc else 'нет confirmation'}: "
+            f"{last_exc or ''})")
 
 
 # ── Управление аккаунтами / лотами / арендой ────────────────────────────────
@@ -4820,19 +4448,6 @@ def upsert_account(acc: dict[str, Any]) -> None:
         accs = list_accounts()
         for i, a in enumerate(accs):
             if a.get("alias", "").lower() == acc["alias"].lower():
-                old_pw_ts = int(a.get("password_updated_at") or 0)
-                new_pw_ts = int(acc.get("password_updated_at") or 0)
-                if (old_pw_ts and old_pw_ts > new_pw_ts
-                        and a.get("password") != acc.get("password")):
-                    # A background task can hold an older account snapshot and
-                    # later save unrelated fields. Never let that stale object
-                    # roll back a newer manual/automatic password update.
-                    acc["password"] = a.get("password", "")
-                    acc["password_updated_at"] = old_pw_ts
-                    if a.get("password_updated_reason"):
-                        acc["password_updated_reason"] = a.get("password_updated_reason")
-                    if a.get("previous_passwords"):
-                        acc["previous_passwords"] = a.get("previous_passwords")
                 accs[i] = acc
                 break
         else:
@@ -6134,21 +5749,20 @@ def _finish_rental(acc: dict[str, Any], *, reason: str = "manual_finish",
     r = acc.get("rental") or {}
     try:
         cfg = get_config()
-        expire_action = cfg.get("expire_action", "password")
-        do_revoke = expire_action in ("revoke", "both")
-        do_chpwd = expire_action in ("password", "both") or \
-            (expire_action not in ("password", "revoke", "both")
-             and cfg.get("change_password_on_expire", True))
-        if do_chpwd:
-            sess = _steam_session_from_acc(acc)
+        if cfg.get("change_password_on_expire", True):
+            sess = SteamSession(
+                account_name=acc.get("account_name", ""),
+                password=acc.get("password", ""),
+                shared_secret=acc.get("shared_secret"),
+                identity_secret=acc.get("identity_secret"),
+                steamid=acc.get("steamid"),
+            )
             try:
                 sess.login()
                 new_pw = _gen_password()
                 sess.change_password(new_pw)
                 with _lock:
                     acc["password"] = new_pw
-                    acc["password_updated_at"] = _now()
-                    acc["password_updated_reason"] = "finish_rental"
             except Exception as exc:
                 LOGGER.warning(
                     "steam_rental: _finish_rental: change_password failed "
@@ -6156,17 +5770,6 @@ def _finish_rental(acc: dict[str, Any], *, reason: str = "manual_finish",
     except Exception:
         LOGGER.debug("steam_rental: _finish_rental: change_password skipped",
                      exc_info=True)
-
-    if do_revoke:
-        try:
-            sess_r = _steam_session_from_acc(acc)
-            sess_r.login()
-            sess_r.revoke_all_other_sessions()
-            LOGGER.info("steam_rental: _finish_rental: revoke OK for %s", alias)
-        except Exception:
-            LOGGER.warning(
-                "steam_rental: _finish_rental: revoke failed for %s",
-                alias, exc_info=True)
     with _lock:
         acc.pop("rental", None)
         acc["last_finished_at"] = _now()
@@ -6603,14 +6206,7 @@ def _end_rental_impl(cardinal: "Cardinal | None", alias: str, reason: str,
     # отключён, теперь это явная опция. Также есть отдельная ручная
     # кнопка `📤 Отозвать сессии` на карточке аккаунта — она работает
     # независимо от этого флага.
-    expire_action = cfg.get("expire_action", "password")
-    do_revoke = expire_action in ("revoke", "both") or \
-        (expire_action == "password" and cfg.get("revoke_sessions_on_expire", False))
-    do_chpwd = expire_action in ("password", "both") or \
-        (expire_action not in ("password", "revoke", "both")
-         and cfg.get("change_password_on_expire", True))
-
-    if sess is not None and do_revoke:
+    if sess is not None and cfg.get("revoke_sessions_on_expire", False):
         try:
             ok_rv = sess.revoke_all_other_sessions()
             result["revoked"] = bool(ok_rv)
@@ -6624,7 +6220,7 @@ def _end_rental_impl(cardinal: "Cardinal | None", alias: str, reason: str,
                 "steam_rental: revoke_sessions failed for %s: %s",
                 alias, exc)
 
-    if sess is not None and do_chpwd:
+    if sess is not None and cfg.get("change_password_on_expire", True):
         new_pw = _gen_password()
         try:
             old_pw = acc.get("password", "")
@@ -6633,8 +6229,6 @@ def _end_rental_impl(cardinal: "Cardinal | None", alias: str, reason: str,
             with _lock:
                 acc = find_account(alias) or acc
                 acc["password"] = new_pw
-                acc["password_updated_at"] = _now()
-                acc["password_updated_reason"] = "end_rental"
                 upsert_account(acc)
             _track_change_pw_result(alias, True)
             result["changed"] = True
@@ -7097,7 +6691,13 @@ def end_rp_session(cardinal: "Cardinal | None", session_id: str, *,
     # Disconnect Remote Play
     if acc:
         try:
-            sess = _steam_session_from_acc(acc)
+            sess = SteamSession(
+                account_name=acc["account_name"],
+                password=acc["password"],
+                shared_secret=acc["shared_secret"],
+                identity_secret=acc["identity_secret"],
+                steamid=acc.get("steamid"),
+            )
             sess.login()
             _disconnect_remote_play(sess)
         except Exception:
@@ -8111,6 +7711,19 @@ def _check_accounts_thread(cardinal: "Cardinal") -> None:
 
 # ── Хэндлеры событий FunPay ──────────────────────────────────────────────────
 def _handler_pre_init(cardinal: "Cardinal") -> None:
+    # 💛 Донат-баннер (защита реквизитов автора)
+    global _donation_cardinal
+    _donation_cardinal = cardinal
+    try:
+        tg = getattr(cardinal, "telegram", None)
+        if tg:
+            tg.cbq_handler(
+                _donation_on_cb,
+                lambda c: (c.data or "").startswith("srl_dn:"))
+            _start_donation_reminder(cardinal)
+    except Exception:
+        pass
+
     _ensure_storage()
     get_config()
     list_accounts()
@@ -8152,188 +7765,6 @@ def _sqlite_dump_now() -> bool:
     except Exception:
         LOGGER.debug("steam_rental: sqlite dump failed", exc_info=True)
         return False
-
-
-def _test_mobile_conf_for_account(alias: str, chat_id: int, bot: Any) -> None:
-    """Self-test: полная проверка maFile + mobile conf через прямой IP
-    и через каждый включённый proxy. Отчёт шлём в chat_id через bot."""
-    acc = find_account(alias)
-    if not acc:
-        bot.send_message(chat_id, f"Аккаунт <code>{_esc(alias)}</code> не найден.", parse_mode="HTML")
-        return
-
-    login = acc.get("account_name") or ""
-    shared = acc.get("shared_secret") or ""
-    identity = acc.get("identity_secret") or ""
-    steamid = acc.get("steamid") or ""
-    password = acc.get("password") or ""
-    device_id_saved = (acc.get("mafile") or {}).get("device_id") or acc.get("device_id") or ""
-
-    results: list[str] = []
-    results.append(f"🧩 build: <code>{_esc(DEBUG_BUILD)}</code>")
-
-    # ── 1. Проверка shared_secret: генерация 2FA кода ──
-    if not shared:
-        results.append("❌ shared_secret: нет в maFile")
-    else:
-        try:
-            from steampy import guard as steam_guard
-            code = steam_guard.generate_one_time_code(shared)
-            results.append(f"✅ 2FA код: <code>{_esc(code)}</code> (shared_secret OK)")
-        except Exception as exc:
-            results.append(f"❌ 2FA код: {_esc(str(exc)[:120])} (shared_secret сломан?)")
-
-    # ── 2. Проверка identity_secret: генерация confirmation key ──
-    if not identity:
-        results.append("❌ identity_secret: нет в maFile")
-    elif not steamid:
-        results.append("❌ steamid: нет — нужен логин в Steam")
-    else:
-        try:
-            from steampy import guard as steam_guard
-            ts = int(time.time())
-            ckey = steam_guard.generate_confirmation_key(identity, "conf", ts)
-            results.append(f"✅ Confirmation key: сгенерирован (identity_secret OK)")
-        except Exception as exc:
-            results.append(f"❌ Confirmation key: {_esc(str(exc)[:120])}")
-
-    if device_id_saved:
-        dev_fp = hashlib.sha1(str(device_id_saved).encode()).hexdigest()[:8]
-        results.append(f"✅ device_id: есть (fp={dev_fp})")
-    else:
-        results.append("⚠️ device_id: нет в карточке, будет fallback от steamid")
-    if shared:
-        results.append(
-            f"🔎 shared_fp={hashlib.sha1(str(shared).encode()).hexdigest()[:8]}")
-    if identity:
-        results.append(
-            f"🔎 identity_fp={hashlib.sha1(str(identity).encode()).hexdigest()[:8]}")
-
-    # ── 3. Проверка, что для логина есть все данные ──
-    can_login = False
-    if not login or not password or not shared or not identity:
-        results.append("⏭ Логин: пропущен (нет данных)")
-    else:
-        can_login = True
-        results.append("✅ Данные для логина: OK")
-
-    # ── 4. Mobile conf: getlist через прямой IP и proxy ──
-    limited_until = max(_MOBILECONF_RATE_LIMITED_UNTIL,
-                        _mobileconf_rate_limited_until())
-    if not identity or not steamid:
-        results.append("⏭ Mobile conf: пропущен (нет identity_secret/steamid)")
-    elif not can_login:
-        results.append("⏭ Mobile conf: пропущен (нет данных для логина)")
-    elif (time.time() < limited_until
-          and not SteamSession._mobile_proxy_list()):
-        wait_min = int((limited_until - time.time()) / 60)
-        results.append(
-            f"🔴 Mobile conf: rate-limit cooldown ещё {wait_min} мин")
-    else:
-        proxy_entries = [e for e in _mobile_proxy_entries() if e.get("enabled", True)]
-        if proxy_entries:
-            attempts = [(e["url"], _mobile_proxy_entry_label(e, i))
-                        for i, e in enumerate(proxy_entries, 1)]
-            results.append(
-                f"🌐 enabled proxies: {len(attempts)}; direct IP skipped")
-        else:
-            attempts = [(None, "прямой IP")]
-        proxy_idx = 0
-        for proxy, proxy_name in attempts:
-            if proxy is None:
-                label = "прямой IP"
-            else:
-                proxy_idx += 1
-                host = proxy.split('@', 1)[-1] if '@' in proxy else proxy
-                proxy_fp = hashlib.sha1(str(proxy).encode()).hexdigest()[:8]
-                label = f"proxy #{proxy_idx} {_esc(proxy_name)} ({host}, fp={proxy_fp})"
-            try:
-                # Проверяем каждую попытку как отдельную Steam web-сессию.
-                # Лишний общий login перед этим тестом может сам провоцировать
-                # Steam Guard fail/429, поэтому здесь логинимся ровно один раз
-                # через тот IP, который проверяем.
-                test_sess = _steam_session_from_acc(acc)
-                test_sess._set_proxy(proxy)
-                if proxy is not None:
-                    try:
-                        ip_r = requests.get(
-                            "https://api.ipify.org/?format=json",
-                            proxies={"http": proxy, "https": proxy},
-                            timeout=12)
-                        if ip_r.status_code == 200:
-                            ip_data = ip_r.json() or {}
-                            if ip_data.get("ip"):
-                                results.append(
-                                    f"🌍 {label}: IP {ip_data.get('ip')}")
-                    except Exception as exc:
-                        results.append(
-                            f"⚠️ {label}: IP check failed: {_short_proxy_error(exc)}")
-                test_sess._login_once()
-                dev_fp = hashlib.sha1(
-                    test_sess._mobile_device_id().encode()).hexdigest()[:8]
-                results.append(f"✅ {label}: login OK, device_fp={dev_fp}")
-                ts = int(time.time())
-                device_id = test_sess._mobile_device_id()
-                buf = struct.pack(">Q", ts) + b"conf"
-                ckey = b64encode(hmac.new(
-                    b64decode(test_sess.identity_secret), buf,
-                    digestmod=hashlib.sha1).digest()).decode()
-                params = {"p": device_id, "a": str(test_sess.steamid), "k": ckey,
-                          "t": str(ts), "m": "android", "tag": "conf"}
-                hdrs = {"X-Requested-With":
-                        "com.valvesoftware.android.steam.community"}
-                resp = test_sess.sess.get(
-                    "https://steamcommunity.com/mobileconf/getlist",
-                    params=params, headers=hdrs, timeout=15)
-                retries_429 = 0
-                for _ in range(3):
-                    if resp.status_code != 429:
-                        break
-                    retries_429 += 1
-                    time.sleep(3)
-                    ts = int(time.time())
-                    buf = struct.pack(">Q", ts) + b"conf"
-                    ckey = b64encode(hmac.new(
-                        b64decode(test_sess.identity_secret), buf,
-                        digestmod=hashlib.sha1).digest()).decode()
-                    params["k"] = ckey
-                    params["t"] = str(ts)
-                    resp = test_sess.sess.get(
-                        "https://steamcommunity.com/mobileconf/getlist",
-                        params=params, headers=hdrs, timeout=15)
-                status = resp.status_code
-                body = (resp.text or "")[:300]
-                if retries_429 and status != 429:
-                    results.append(f"↻ {label}: mobileconf OK после retry x{retries_429}")
-                if "incorrect Steam Guard codes" in body:
-                    results.append(f"❌ {label}: Invalid Steam Guard (maFile сломан!)")
-                    break
-                if status == 200:
-                    data = json.loads(body or "{}")
-                    if data.get("success") is False:
-                        results.append(f"🔴 {label}: HTTP 200 но {data}")
-                    else:
-                        confs = data.get("conf", [])
-                        results.append(f"✅ {label}: HTTP 200, confirmations: {len(confs)}")
-                    break
-                elif status == 429:
-                    results.append(
-                        f"🔴 {label}: 429 Rate limit на mobileconf")
-                    if proxy is None and not proxy_entries:
-                        _set_mobileconf_rate_limit_cooldown()
-                        results.append(
-                            f"⏳ Глобальный cooldown "
-                            f"{_MOBILECONF_RATE_LIMIT_COOLDOWN // 60} мин установлен")
-                else:
-                    results.append(f"🔴 {label}: HTTP {status} body={body[:100]!r}")
-            except Exception as exc:
-                results.append(f"🔴 {label}: {_short_proxy_error(exc)}")
-
-    report = "\n".join(results)
-    bot.send_message(
-        chat_id,
-        f"📱 <b>Mobile conf test: {_esc(alias)}</b>\n\n{report}",
-        parse_mode="HTML")
 
 
 def _recover_on_start(cardinal: "Cardinal") -> None:
@@ -9657,8 +9088,6 @@ def _handler_order_status_changed(cardinal: "Cardinal",
         buyer_id_v = getattr(order, "buyer_id", None)
         buyer_un_v = getattr(order, "buyer_username", None)
         order_id_v = getattr(order, "id", None)
-        refund_alias = None
-        refund_amount = 0.0
 
         # ── REFUND / CANCEL detection (общее для refund-stats и blacklist) ─
         try:
@@ -11950,10 +11379,6 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
             tbtypes.InlineKeyboardButton(
                 "📤 Отозвать сессии", callback_data=f"sr:revoke:{sid}"),
         )
-        kb.add(
-            tbtypes.InlineKeyboardButton(
-                "✍️ Заменить пароль в базе", callback_data=f"sr:setpwd:{sid}"),
-        )
         freeze_label = "🔥 Разморозить" if is_frozen else "❄️ Заморозить"
         kb.add(
             tbtypes.InlineKeyboardButton(
@@ -11966,10 +11391,6 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
                 "✏️ Алиас", callback_data=f"sr:ralias:{sid}"),
             tbtypes.InlineKeyboardButton(
                 "🔓 Освободить", callback_data=f"sr:free:{sid}"),
-        )
-        kb.add(
-            tbtypes.InlineKeyboardButton(
-                "📱 Test mobile conf", callback_data=f"sr:mcnf:{sid}"),
         )
         cost_val = float((acc or {}).get("cost", 0.0) or 0.0)
         cost_lbl = f"💰 Стоимость: {cost_val:.0f}₽" if cost_val > 0 \
@@ -12734,11 +12155,6 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
             "⏱ Лимиты аренды", callback_data="sr:setlimits"))
         kb.add(tbtypes.InlineKeyboardButton(
             "🔒 Безопасность", callback_data="sr:setsec"))
-        proxy_entries = _proxy_entries(cfg)
-        proxy_on = sum(1 for e in proxy_entries if e.get("enabled", True))
-        kb.add(tbtypes.InlineKeyboardButton(
-            f"🌐 Steam proxies ({proxy_on}/{len(proxy_entries)})",
-            callback_data="sr:setproxy"))
         kb.add(tbtypes.InlineKeyboardButton(
             "🏠 PC-клуб + AI", callback_data="sr:clbset"))
         kb.add(tbtypes.InlineKeyboardButton(
@@ -12859,22 +12275,14 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
         )
 
     # ── Подраздел: Безопасность ───────────────────────────────────────
-    _EXPIRE_ACTION_LABELS: dict[str, str] = {
-        "password": "🔐 Смена пароля",
-        "revoke": "📤 Отзыв сессий",
-        "both": "🔐+📤 Пароль + сессии",
-    }
-
     def _kb_sec_set() -> tbtypes.InlineKeyboardMarkup:
         cfg = get_config()
         kb = tbtypes.InlineKeyboardMarkup(row_width=1)
         kb.add(_toggle_btn("Автовыдача аккаунта", "auto_deliver", cfg))
-        # ── Режим освобождения аккаунта ──
-        action = cfg.get("expire_action", "password")
-        cur_lbl = _EXPIRE_ACTION_LABELS.get(action, action)
-        kb.add(tbtypes.InlineKeyboardButton(
-            f"🔑 При завершении аренды: {cur_lbl}",
-            callback_data="sr:expact"))
+        kb.add(_toggle_btn("Менять пароль по истечении",
+                           "change_password_on_expire", cfg))
+        kb.add(_toggle_btn("Отзывать сессии по истечении",
+                           "revoke_sessions_on_expire", cfg))
         kb.add(_toggle_btn("Проверка при запуске",
                            "check_accounts_on_start", cfg))
         kb.add(_toggle_btn("Авто-деактивация лотов",
@@ -12891,27 +12299,17 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
         cfg = get_config()
         def _b(k, d=True):
             return '✅' if cfg.get(k, d) else '❌'
-        action = cfg.get("expire_action", "password")
-        action_lbl = _EXPIRE_ACTION_LABELS.get(action, action)
         return (
             "<b>🔒 Безопасность</b>\n\n"
             f"Автовыдача аккаунта: {_b('auto_deliver')}\n"
-            f"🔑 <b>При завершении аренды:</b> {action_lbl}\n"
+            f"Менять пароль по истечении: {_b('change_password_on_expire')}\n"
+            f"Отзывать сессии по истечении: {_b('revoke_sessions_on_expire')}\n"
             f"Проверка при запуске: {_b('check_accounts_on_start')}\n"
             f"Авто-деактивация лотов: {_b('auto_deactivate_lots')}\n"
             f"Авто-продление (extension): {_b('auto_extend_enabled')}\n"
             f"Fallback продления по тексту заказа: "
-            f"{_b('extension_buyer_fallback_enabled', False)}\n\n"
-            "<i>🔑 <b>Смена пароля</b> — меняет пароль через Steam mobile "
-            "confirmation. Нужен рабочий IP/proxy. Если Steam даёт 429 — "
-            "пароль не сменится.\n"
-            "📤 <b>Отзыв сессий</b> — отзывает все активные сессии кроме "
-            "текущей. Не требует mobile confirmation, работает даже при "
-            "429.\n"
-            "🔐+📤 <b>Пароль + сессии</b> — сначала отзывает сессии, потом "
-            "меняет пароль. Максимум защиты, но если 429 — пароль не "
-            "сменится (сессии всё равно отзовутся).</i>\n\n"
-            "<i>Авто-поднятие лотов FunPay делает Cardinal сам "
+            f"{_b('extension_buyer_fallback_enabled', False)}\n"
+            "\n<i>Авто-поднятие лотов FunPay делает Cardinal сам "
             "(autoRaise в _main.cfg). Плагин в это не вмешивается. "
             "«Подождите N часов» в логах — естественный rate-limit "
             "FunPay, а не ошибка.)</i>\n\n"
@@ -12922,247 +12320,6 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
             "плагин подберёт extension-лот сам. Защита: чужая игра в "
             "названии заказа = пропуск.</i>"
         )
-
-    # ── Подраздел: Steam mobile proxies ────────────────────────────────
-    def _proxy_entries(cfg: dict | None = None) -> list[dict[str, Any]]:
-        return _mobile_proxy_entries(cfg)
-
-    def _save_proxy_entries(cfg: dict, entries: list[dict[str, Any]]) -> None:
-        cfg["steam_mobile_proxies"] = entries
-        cfg["steam_mobile_proxies_updated_at"] = _now()
-        save_config(cfg)
-
-    def _get_steam_mobile_proxies(cfg: dict | None = None) -> list[str]:
-        return [e["url"] for e in _proxy_entries(cfg) if e.get("enabled", True)]
-
-    def _mask_proxy(proxy: str) -> str:
-        p = str(proxy or "").strip()
-        if "@" not in p:
-            return p
-        prefix, host = p.rsplit("@", 1)
-        scheme = ""
-        creds = prefix
-        if "://" in prefix:
-            scheme, creds = prefix.split("://", 1)
-            scheme += "://"
-        if ":" in creds:
-            user = creds.split(":", 1)[0]
-            return f"{scheme}{user}:***@{host}"
-        return f"{scheme}***@{host}"
-
-    def _proxy_entry_label(entry: dict[str, Any], index: int) -> str:
-        return _mobile_proxy_entry_label(entry, index)
-
-    def _parse_proxy_with_name(raw: str) -> tuple[str, str]:
-        value = (raw or "").strip()
-        for sep in ("|", "\n"):
-            if sep in value:
-                left, right = value.split(sep, 1)
-                left = left.strip()
-                right = right.strip()
-                if left and right:
-                    return left[:60], right
-        return "", value
-
-    def _normalize_proxy_input(raw: str) -> tuple[str | None, str | None]:
-        _name, value = _parse_proxy_with_name(raw)
-        if not value or any(ch.isspace() for ch in value):
-            return None, "В proxy не должно быть пробелов."
-        if re.match(r"^(https?|socks4|socks5)://[^\s]+$", value):
-            if "steamcommunity.com" in value or "steampowered.com" in value:
-                return None, "Это URL Steam, а не proxy."
-            return value, None
-        parts = value.split(":", 3)
-        if len(parts) == 4:
-            host, port, user, password = [p.strip() for p in parts]
-            if host and port.isdigit() and user and password:
-                return f"http://{user}:{password}@{host}:{port}", None
-        if len(parts) == 2:
-            host, port = [p.strip() for p in parts]
-            if host and port.isdigit():
-                return f"http://{host}:{port}", None
-        return None, (
-            "Формат: <code>ip:port:login:password</code> или "
-            "<code>http://login:password@ip:port</code>."
-        )
-
-    def _format_check_status(ok: Any, error: Any) -> str:
-        if ok is True:
-            detail = str(error or "").strip()
-            return "🟢 OK" + (f" ({detail[:70]})" if detail else "")
-        if ok is False:
-            return f"🔴 {str(error or 'ошибка')[:70]}"
-        return "⚪ не проверялся"
-
-    def _proxy_status(entry: dict[str, Any]) -> str:
-        if not entry.get("enabled", True):
-            return "⏸ выключен"
-        proxy_ok = entry.get("proxy_check_ok", entry.get("last_check_ok"))
-        proxy_err = entry.get("proxy_check_error", entry.get("last_check_error"))
-        steam_ok = entry.get("steam_check_ok", entry.get("last_check_ok"))
-        steam_err = entry.get("steam_check_error", entry.get("last_check_error"))
-        return (
-            f"🌍 Proxy: {_format_check_status(proxy_ok, proxy_err)}; "
-            f"🎮 Steam: {_format_check_status(steam_ok, steam_err)}"
-        )
-
-    def _check_proxy_url(proxy: str, url: str, *, steam: bool = False) -> tuple[bool, str]:
-        try:
-            timeout = 25 if steam else 12
-            resp = requests.get(url, proxies={"http": proxy, "https": proxy}, timeout=timeout)
-            if resp.status_code == 200:
-                return True, "OK"
-            if resp.status_code == 407:
-                return False, "proxy auth failed"
-            if steam and resp.status_code == 403:
-                return False, "Steam blocked/proxy forbidden"
-            if steam and resp.status_code == 429:
-                return False, "Steam rate limited this proxy"
-            return False, f"HTTP {resp.status_code}"
-        except Exception as exc:
-            return False, _short_proxy_error(exc)
-
-    def _check_proxy_generic(proxy: str) -> tuple[bool, str]:
-        return _check_proxy_url(proxy, "https://api.ipify.org/?format=json")
-
-    def _check_proxy_steam(proxy: str) -> tuple[bool, str]:
-        acc = None
-        for candidate in list_accounts():
-            if candidate.get("test"):
-                continue
-            if (candidate.get("account_name") and candidate.get("password")
-                    and candidate.get("shared_secret")
-                    and candidate.get("identity_secret")):
-                acc = candidate
-                break
-        if not acc:
-            return False, "нет аккаунта для Steam login/mobileconf test"
-
-        try:
-            sess = _steam_session_from_acc(acc)
-            sess._set_proxy(proxy)
-            sess._login_once()
-        except Exception as exc:
-            return False, "login: " + _short_proxy_error(exc)
-
-        try:
-            ts = int(time.time())
-            buf = struct.pack(">Q", ts) + b"conf"
-            ckey = b64encode(hmac.new(
-                b64decode(sess.identity_secret), buf,
-                digestmod=hashlib.sha1).digest()).decode()
-            params = {
-                "p": sess._mobile_device_id(),
-                "a": str(sess.steamid),
-                "k": ckey,
-                "t": str(ts),
-                "m": "android",
-                "tag": "conf",
-            }
-            resp = sess.sess.get(
-                "https://steamcommunity.com/mobileconf/getlist",
-                params=params,
-                headers={"X-Requested-With":
-                         "com.valvesoftware.android.steam.community"},
-                timeout=20)
-            if resp.status_code == 200:
-                data = resp.json() or {}
-                if data.get("success") is False:
-                    return False, f"mobileconf: {str(data)[:120]}"
-                confs = data.get("conf", [])
-                return True, f"login OK; mobileconf OK ({len(confs)})"
-            if resp.status_code == 429:
-                return False, "mobileconf: 429 rate limit"
-            body = _short_http_body(resp.text or "")
-            return False, f"mobileconf: HTTP {resp.status_code} {body[:80]}"
-        except Exception as exc:
-            return False, "mobileconf: " + _short_proxy_error(exc)
-
-    def _kb_proxy_set() -> tbtypes.InlineKeyboardMarkup:
-        entries = _proxy_entries()
-        kb = tbtypes.InlineKeyboardMarkup(row_width=1)
-        kb.add(tbtypes.InlineKeyboardButton(
-            "➕ Добавить proxy", callback_data="sr:proxyadd"))
-        for i, entry in enumerate(entries[:20], 1):
-            proxy = entry["url"]
-            label = _proxy_entry_label(entry, i)
-            if len(label) > 28:
-                label = label[:25] + "..."
-            on = "✅" if entry.get("enabled", True) else "⏸"
-            kb.add(tbtypes.InlineKeyboardButton(
-                f"{on} #{i} {label}", callback_data=f"sr:proxytgl:{i - 1}"))
-            kb.add(
-                tbtypes.InlineKeyboardButton(
-                    f"   ✏️ Название #{i}", callback_data=f"sr:proxynam:{i - 1}"),
-                tbtypes.InlineKeyboardButton(
-                    f"🗑 Удалить #{i}", callback_data=f"sr:proxydel:{i - 1}"),
-            )
-        if entries:
-            kb.add(tbtypes.InlineKeyboardButton(
-                "🌍 Проверить proxy", callback_data="sr:proxycheck"))
-            kb.add(tbtypes.InlineKeyboardButton(
-                "🎮 Проверить Steam login+mobileconf", callback_data="sr:proxysteam"))
-            kb.add(tbtypes.InlineKeyboardButton(
-                "🧹 Удалить все", callback_data="sr:proxyclear"))
-        kb.add(tbtypes.InlineKeyboardButton(
-            "◀️ Назад", callback_data="sr:settings"))
-        return kb
-
-    def _text_proxy_set() -> str:
-        entries = _proxy_entries()
-        if entries:
-            lines = []
-            for i, entry in enumerate(entries, 1):
-                name = _proxy_entry_label(entry, i)
-                lines.append(
-                    f"{i}. <b>{_esc(name)}</b> — "
-                    f"<code>{_esc(_mask_proxy(entry['url']))}</code> — "
-                    f"{_esc(_proxy_status(entry))}")
-            body = "\n".join(lines)
-        else:
-            body = "Прокси не добавлены. При 429 Steam будет пробоваться только прямой IP."
-        return (
-            "<b>🌐 Steam mobile proxies</b>\n\n"
-            "Используются для Steam mobile confirmations при rate-limit 429: "
-            "сначала прямой IP, потом прокси по списку сверху вниз.\n"
-            "<i>🎮 Steam OK теперь проверяет реальный Steam login + "
-            "mobileconf/getlist на одном аккаунте из пула.</i>\n\n"
-            f"<b>Список:</b>\n{body}\n\n"
-            "Формат: <code>ip:port:login:password</code>, "
-            "<code>http://user:pass@ip:port</code> или "
-            "<code>socks5://user:pass@ip:port</code>.\n"
-            "С названием: <code>FR test | http://user:pass@ip:port</code>."
-        )
-
-    def _start_add_proxy(uid, chat_id, msg_id, cb_id):
-        _pending_state[uid] = {
-            "step": "proxy_add", "chat_id": chat_id, "main_msg_id": msg_id}
-        tg.bot.answer_callback_query(cb_id)
-        _prompt(chat_id, msg_id,
-                "<b>🌐 Добавление Steam proxy</b>\n\n"
-                "<b>Шаг 1/2.</b> Отправь proxy одной строкой.\n"
-                "Примеры:\n"
-                "• <code>193.32.153.230:9679:M2EHgk:HHK4xB</code>\n"
-                "• <code>http://user:pass@1.2.3.4:8000</code>\n\n"
-                "Чтобы отменить — /srental_cancel.")
-
-    def _start_rename_proxy(uid, chat_id, msg_id, idx: int, cb_id):
-        cfg = get_config()
-        entries = _proxy_entries(cfg)
-        if not (0 <= idx < len(entries)):
-            tg.bot.answer_callback_query(cb_id, "Proxy не найден.")
-            return
-        _pending_state[uid] = {
-            "step": "proxy_name", "ctx": idx,
-            "chat_id": chat_id, "main_msg_id": msg_id}
-        tg.bot.answer_callback_query(cb_id)
-        cur = entries[idx].get("name") or f"Proxy #{idx + 1}"
-        _prompt(chat_id, msg_id,
-                f"<b>✏️ Название proxy #{idx + 1}</b>\n\n"
-                f"Сейчас: <code>{_esc(cur)}</code>\n\n"
-                f"Отправь короткое название, например "
-                f"<code>Soxway BR mobileconf OK</code>.\n"
-                f"Отправь <code>-</code>, чтобы очистить.")
 
     # Реестр view'ов для роутинга после тогла
     _TGL_RETURN_VIEW: dict[str, str] = {
@@ -13179,6 +12336,8 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
         "review_delete_blacklist": "setreview",
         # Безопасность
         "auto_deliver": "setsec",
+        "change_password_on_expire": "setsec",
+        "revoke_sessions_on_expire": "setsec",
         "check_accounts_on_start": "setsec",
         "auto_deactivate_lots": "setsec",
         "auto_extend_enabled": "setsec",
@@ -13256,6 +12415,8 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
         penalty_on = '✅' if cfg.get('review_delete_penalty_enabled', True) else '❌'
         sec_on_cnt = sum(1 for k in (
             "auto_deliver",
+            "change_password_on_expire",
+            "revoke_sessions_on_expire",
             "check_accounts_on_start",
             "auto_deactivate_lots",
             "auto_extend_enabled",
@@ -13264,8 +12425,6 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
         # слагаемым, чтобы дефолт-значения остальных не «затирались».
         if cfg.get("extension_buyer_fallback_enabled", False):
             sec_on_cnt += 1
-        proxy_entries = _proxy_entries(cfg)
-        proxy_on = sum(1 for e in proxy_entries if e.get("enabled", True))
         return (
             "<b>⚙ Настройки</b>\n\n"
             f"🔔 <b>Уведомления:</b> {tg_on} TG, выдача {post_on}, "
@@ -13274,9 +12433,7 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
             f"({cfg.get('review_bonus_hours', 1)} ч), штраф {penalty_on}\n"
             f"⏱ <b>Лимиты:</b> {cfg.get('min_rental_hours', 1)}..."
             f"{cfg.get('max_rental_hours', 1668)} ч\n"
-            f"🔒 <b>Безопасность:</b> {sec_on_cnt}/5 включено\n"
-            f"🔑 <b>При завершении:</b> {_esc(_EXPIRE_ACTION_LABELS.get(cfg.get('expire_action', 'password'), '?'))}\n"
-            f"🌐 <b>Steam proxies:</b> {proxy_on}/{len(proxy_entries)} включено\n"
+            f"🔒 <b>Безопасность:</b> {sec_on_cnt}/7 включено\n"
             f"Команда: <code>{_esc(cfg.get('guardik_command', '!код'))}</code>\n\n"
             "Выбери раздел для настройки:"
         )
@@ -14047,7 +13204,9 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
         fail = 0
         for acc in targets:
             try:
-                s = _steam_session_from_acc(acc)
+                s = SteamSession(acc["account_name"], acc["password"],
+                                  acc["shared_secret"], acc["identity_secret"],
+                                  acc.get("steamid"))
                 s.login()
                 _track_login_result(acc["alias"], True)
                 new_pw = _gen_password()
@@ -14055,8 +13214,6 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
                 with _lock:
                     a = find_account(acc["alias"]) or acc
                     a["password"] = new_pw
-                    a["password_updated_at"] = _now()
-                    a["password_updated_reason"] = "bulk_change_password"
                     a["steamid"] = s.steamid
                     upsert_account(a)
                 ok += 1
@@ -14650,22 +13807,6 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
                 alias = _resolve_alias(arg)
                 if alias:
                     _start_revoke(chat_id, msg_id, alias, call.id)
-            elif action == "mcnf":
-                alias = _resolve_alias(arg)
-                if not alias:
-                    tg.bot.answer_callback_query(call.id, "Аккаунт не найден.")
-                    return
-                tg.bot.answer_callback_query(call.id, "Проверяю mobile conf...")
-                tg.bot.send_message(chat_id, "📱 <b>Test mobile confirmation</b>\n\n⏳ Логинюсь и пробую получить confirmations...", parse_mode="HTML")
-                bot_ref = tg.bot
-                def _worker():
-                    try:
-                        _test_mobile_conf_for_account(alias, chat_id, bot_ref)
-                    except Exception as ex:
-                        bot_ref.send_message(chat_id,
-                            f"❌ Test mobile conf упал: <code>{_esc(str(ex)[:300])}</code>",
-                            parse_mode="HTML")
-                threading.Thread(target=_worker, daemon=True).start()
             elif action == "freeze":
                 alias = _resolve_alias(arg)
                 if alias:
@@ -14699,10 +13840,6 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
                 alias = _resolve_alias(arg)
                 if alias:
                     _start_set_cost(uid, chat_id, msg_id, alias, call.id)
-            elif action == "setpwd":
-                alias = _resolve_alias(arg)
-                if alias:
-                    _start_set_password(uid, chat_id, msg_id, alias, call.id)
             elif action == "setpd_acc":
                 alias = _resolve_alias(arg)
                 if alias:
@@ -15530,114 +14667,6 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
             elif action == "setsec":
                 _edit_menu(chat_id, msg_id,
                            _text_sec_set(), _kb_sec_set())
-            elif action == "expact":
-                cfg = get_config()
-                order = ["password", "revoke", "both"]
-                cur = cfg.get("expire_action", "password")
-                if cur not in order:
-                    cur = "password"
-                idx = order.index(cur)
-                cfg["expire_action"] = order[(idx + 1) % len(order)]
-                # Синхронизируем старые флаги для обратной совместимости
-                cfg["change_password_on_expire"] = cfg["expire_action"] in ("password", "both")
-                cfg["revoke_sessions_on_expire"] = cfg["expire_action"] in ("revoke", "both")
-                save_config(cfg)
-                lbl = _EXPIRE_ACTION_LABELS.get(cfg["expire_action"], cfg["expire_action"])
-                tg.bot.answer_callback_query(call.id, f"Режим: {lbl}")
-                _edit_menu(chat_id, msg_id,
-                           _text_sec_set(), _kb_sec_set())
-            elif action == "setproxy":
-                _edit_menu(chat_id, msg_id,
-                           _text_proxy_set(), _kb_proxy_set())
-            elif action == "proxyadd":
-                _start_add_proxy(uid, chat_id, msg_id, call.id)
-            elif action == "proxytgl":
-                cfg = get_config()
-                entries = _proxy_entries(cfg)
-                try:
-                    idx = int(arg)
-                except ValueError:
-                    idx = -1
-                if 0 <= idx < len(entries):
-                    entries[idx]["enabled"] = not entries[idx].get("enabled", True)
-                    _save_proxy_entries(cfg, entries)
-                    state = "включён" if entries[idx]["enabled"] else "выключен"
-                    tg.bot.answer_callback_query(call.id, f"Proxy {state}.")
-                else:
-                    tg.bot.answer_callback_query(call.id, "Прокси не найден.")
-                _edit_menu(chat_id, msg_id,
-                           _text_proxy_set(), _kb_proxy_set())
-            elif action == "proxynam":
-                try:
-                    idx = int(arg)
-                except ValueError:
-                    idx = -1
-                _start_rename_proxy(uid, chat_id, msg_id, idx, call.id)
-            elif action == "proxydel":
-                cfg = get_config()
-                entries = _proxy_entries(cfg)
-                try:
-                    idx = int(arg)
-                except ValueError:
-                    idx = -1
-                if 0 <= idx < len(entries):
-                    removed = entries.pop(idx)
-                    _save_proxy_entries(cfg, entries)
-                    tg.bot.answer_callback_query(call.id, "Proxy удалён.")
-                    LOGGER.info("steam_rental: removed Steam mobile proxy %s",
-                                _mask_proxy(removed.get("url", "")))
-                else:
-                    tg.bot.answer_callback_query(call.id, "Proxy не найден.")
-                _edit_menu(chat_id, msg_id,
-                           _text_proxy_set(), _kb_proxy_set())
-            elif action == "proxyclear":
-                cfg = get_config()
-                cfg["steam_mobile_proxies"] = []
-                cfg["steam_mobile_proxies_updated_at"] = _now()
-                save_config(cfg)
-                tg.bot.answer_callback_query(call.id, "Все proxy удалены.")
-                _edit_menu(chat_id, msg_id,
-                           _text_proxy_set(), _kb_proxy_set())
-            elif action == "proxycheck":
-                cfg = get_config()
-                entries = _proxy_entries(cfg)
-                enabled = [e for e in entries if e.get("enabled", True)]
-                if not enabled:
-                    tg.bot.answer_callback_query(call.id, "Нет включённых proxy.")
-                    _edit_menu(chat_id, msg_id,
-                               _text_proxy_set(), _kb_proxy_set())
-                    return
-                tg.bot.answer_callback_query(call.id, "Проверяю работу proxy...")
-                for entry in entries:
-                    if not entry.get("enabled", True):
-                        continue
-                    ok, detail = _check_proxy_generic(entry["url"])
-                    entry["proxy_check_ok"] = ok
-                    entry["proxy_check_ts"] = _now()
-                    entry["proxy_check_error"] = "" if ok else detail
-                _save_proxy_entries(cfg, entries)
-                _edit_menu(chat_id, msg_id,
-                           _text_proxy_set(), _kb_proxy_set())
-            elif action == "proxysteam":
-                cfg = get_config()
-                entries = _proxy_entries(cfg)
-                enabled = [e for e in entries if e.get("enabled", True)]
-                if not enabled:
-                    tg.bot.answer_callback_query(call.id, "Нет включённых proxy.")
-                    _edit_menu(chat_id, msg_id,
-                               _text_proxy_set(), _kb_proxy_set())
-                    return
-                tg.bot.answer_callback_query(call.id, "Проверяю Steam через proxy...")
-                for entry in entries:
-                    if not entry.get("enabled", True):
-                        continue
-                    ok, detail = _check_proxy_steam(entry["url"])
-                    entry["steam_check_ok"] = ok
-                    entry["steam_check_ts"] = _now()
-                    entry["steam_check_error"] = detail
-                _save_proxy_entries(cfg, entries)
-                _edit_menu(chat_id, msg_id,
-                           _text_proxy_set(), _kb_proxy_set())
             elif action == "tgl":
                 cfg = get_config()
                 if arg in cfg and isinstance(cfg[arg], bool):
@@ -16460,18 +15489,7 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
         except Exception as exc:
             tg.bot.send_message(chat_id, f"Ошибка: {exc}")
 
-    _chpwd_last_attempt: dict[str, float] = {}
-
     def _start_chpwd(chat_id, msg_id, alias, cb_id):
-        now_ts = time.time()
-        last = _chpwd_last_attempt.get(alias, 0)
-        cooldown = 60  # 60 сек между попытками для одного аккаунта
-        if now_ts - last < cooldown:
-            remaining = int(cooldown - (now_ts - last))
-            tg.bot.answer_callback_query(
-                cb_id, f"Подождите {remaining} сек. перед повторной попыткой.")
-            return
-        _chpwd_last_attempt[alias] = now_ts
         tg.bot.answer_callback_query(cb_id, "Запускаю...")
         sid = _sid(alias)
         kb = tbtypes.InlineKeyboardMarkup()
@@ -16517,35 +15535,12 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
                 s = SteamSession(acc["account_name"], acc["password"],
                                   acc["shared_secret"], acc["identity_secret"],
                                   acc.get("steamid"))
-                try:
-                    s.login()
-                except Exception as login_exc:
-                    LOGGER.warning(
-                        "steam_rental: native login failed for revoke %s, "
-                        "retry steampy: %s", alias, login_exc)
-                    try:
-                        s.login_steampy()
-                    except Exception as steampy_exc:
-                        raise SteamError(
-                            f"native login failed: {login_exc}; "
-                            f"steampy retry failed: {steampy_exc}") from steampy_exc
+                s.login()
                 _track_login_result(alias, True)
                 ok = s.revoke_all_other_sessions()
-                if not ok:
-                    first_details = list(s.last_revoke_details)
-                    try:
-                        s.login_steampy()
-                        ok = s.revoke_all_other_sessions()
-                        s.last_revoke_details = first_details + [
-                            "steampy retry:"] + s.last_revoke_details
-                    except Exception as retry_exc:
-                        s.last_revoke_details = first_details + [
-                            f"steampy retry error: {_short_proxy_error(retry_exc)}"]
-                details = " | ".join(s.last_revoke_details)[:1500]
-                extra = "" if ok or not details else f"\n\n<code>{_esc(details)}</code>"
                 _edit_menu(chat_id, msg_id,
-                            f"{'✅' if ok else '⚠️'} Revoke <b>{_esc(alias)}</b>: "
-                            f"<code>{ok}</code>{extra}", kb)
+                           f"{'✅' if ok else '⚠️'} Revoke <b>{_esc(alias)}</b>: "
+                           f"<code>{ok}</code>", kb)
             except Exception as exc:
                 _track_login_result(alias, False)
                 _edit_menu(chat_id, msg_id,
@@ -17153,19 +16148,6 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
                 "Можно дробное (<code>1500.50</code>) или целое.\n"
                 "Отправь <code>0</code> или <code>-</code> чтобы обнулить.")
 
-    def _start_set_password(uid, chat_id, msg_id, alias, cb_id):
-        _pending_state[uid] = {
-            "step": "set_password", "ctx": alias,
-            "chat_id": chat_id, "main_msg_id": msg_id}
-        tg.bot.answer_callback_query(cb_id)
-        _prompt(chat_id, msg_id,
-                f"<b>✍️ Заменить сохранённый пароль</b>\n\n"
-                f"Аккаунт: <code>{_esc(alias)}</code>\n\n"
-                f"Отправь <b>новый текущий пароль Steam</b>. "
-                f"Плагин только обновит пароль в базе и сохранит старый "
-                f"в историю. В Steam запросов не будет.\n\n"
-                f"Сообщение с паролем будет удалено автоматически.")
-
     def _start_set_post_delivery_acc(uid, chat_id, msg_id, alias, cb_id):
         _pending_state[uid] = {
             "step": "setpd_acc", "ctx": alias,
@@ -17270,8 +16252,8 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
         "editlot_duration", "editlot_aliases", "editlot_game", "editlot_ext",
         "editlot_ext_games",
         "edit_setting", "edit_template", "setgame_acc", "set_cost",
-        "set_password", "setpd_acc", "setpd_lot",
-        "acc_search", "rename_alias", "proxy_add", "proxy_add_name", "proxy_name",
+        "setpd_acc", "setpd_lot",
+        "acc_search", "rename_alias",
         "blot_aliases", "blot_game",
         "blot_club", "blot_keys", "blot_extparent",
         "bl_add",
@@ -18182,38 +17164,6 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
             if msg_id:
                 _edit_menu(chat_id, msg_id, _text_acc(alias), _kb_acc(alias))
 
-        elif step == "set_password":
-            alias = st["ctx"]
-            new_pw = text.strip()
-            try:
-                tg.bot.delete_message(message.chat.id, message.message_id)
-            except Exception:
-                pass
-            if not new_pw:
-                tg.bot.send_message(chat_id, "⚠ Пароль не может быть пустым.")
-                return
-            with _lock:
-                acc = find_account(alias)
-                if not acc:
-                    tg.bot.send_message(chat_id, "Аккаунт не найден.")
-                    _pending_state.pop(uid, None)
-                    return
-                old_pw = acc.get("password", "")
-                if old_pw and old_pw != new_pw:
-                    _push_previous_password(alias, old_pw)
-                    acc = find_account(alias) or acc
-                acc["password"] = new_pw
-                acc["password_updated_at"] = _now()
-                acc["password_updated_reason"] = "manual_set_password"
-                upsert_account(acc)
-            _pending_state.pop(uid, None)
-            tg.bot.send_message(chat_id,
-                f"✅ <code>{_esc(alias)}</code>: сохранённый пароль обновлён. "
-                f"Старый пароль добавлен в историю, если отличался.",
-                parse_mode="HTML")
-            if msg_id:
-                _edit_menu(chat_id, msg_id, _text_acc(alias), _kb_acc(alias))
-
         elif step == "setpd_acc":
             alias = st["ctx"]
             t = text or ""
@@ -18286,100 +17236,6 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
             if msg_id:
                 _edit_menu(chat_id, msg_id,
                            _text_acc(new_alias), _kb_acc(new_alias))
-
-        elif step == "proxy_add":
-            name, _proxy_raw = _parse_proxy_with_name(text)
-            proxy, err = _normalize_proxy_input(text)
-            if not proxy:
-                tg.bot.send_message(
-                    chat_id,
-                    f"⚠ Некорректный формат proxy. {err}",
-                    parse_mode="HTML")
-                return
-            cfg = get_config()
-            entries = _proxy_entries(cfg)
-            if any(e.get("url") == proxy for e in entries):
-                tg.bot.send_message(chat_id, "Этот proxy уже есть в списке.")
-                _pending_state.pop(uid, None)
-                if msg_id:
-                    _edit_menu(chat_id, msg_id,
-                               _text_proxy_set(), _kb_proxy_set())
-                return
-            st["proxy"] = proxy
-            st["step"] = "proxy_add_name"
-            _pending_state.pop(uid, None)
-            _pending_state[uid] = st
-            suggested = f"\nПредложенное: <code>{_esc(name)}</code>" if name else ""
-            _prompt(chat_id, msg_id,
-                    "<b>🌐 Добавление Steam proxy</b>\n\n"
-                    "<b>Шаг 2/2.</b> Отправь короткое название, чтобы "
-                    "отличать proxy в списке.\n\n"
-                    "Например: <code>Soxway BR OK</code>\n"
-                    "Или отправь <code>-</code>, чтобы оставить без названия."
-                    f"{suggested}")
-            return
-
-        elif step == "proxy_add_name":
-            proxy = st.get("proxy")
-            if not proxy:
-                tg.bot.send_message(chat_id, "Proxy не найден в состоянии ввода.")
-                _pending_state.pop(uid, None)
-                return
-            name = str(st.get("proxy_name") or "").strip()
-            if not name:
-                name = "" if text.strip() == "-" else text.strip()[:60]
-            cfg = get_config()
-            entries = _proxy_entries(cfg)
-            if any(e.get("url") == proxy for e in entries):
-                tg.bot.send_message(chat_id, "Этот proxy уже есть в списке.")
-                _pending_state.pop(uid, None)
-                if msg_id:
-                    _edit_menu(chat_id, msg_id,
-                               _text_proxy_set(), _kb_proxy_set())
-                return
-            entries.append({
-                "url": proxy,
-                "name": name,
-                "enabled": True,
-                "proxy_check_ok": None,
-                "proxy_check_ts": 0,
-                "proxy_check_error": "",
-                "steam_check_ok": None,
-                "steam_check_ts": 0,
-                "steam_check_error": "",
-            })
-            _save_proxy_entries(cfg, entries)
-            _pending_state.pop(uid, None)
-            label = f" ({_esc(name)})" if name else ""
-            tg.bot.send_message(
-                chat_id,
-                f"✅ Proxy добавлен{label}: <code>{_esc(_mask_proxy(proxy))}</code>",
-                parse_mode="HTML")
-            LOGGER.info("steam_rental: added Steam mobile proxy %s",
-                        _mask_proxy(proxy))
-            if msg_id:
-                _edit_menu(chat_id, msg_id,
-                           _text_proxy_set(), _kb_proxy_set())
-
-        elif step == "proxy_name":
-            idx = int(st.get("ctx", -1))
-            name = "" if text.strip() == "-" else text.strip()[:60]
-            cfg = get_config()
-            entries = _proxy_entries(cfg)
-            if not (0 <= idx < len(entries)):
-                tg.bot.send_message(chat_id, "Proxy не найден.")
-                _pending_state.pop(uid, None)
-                return
-            entries[idx]["name"] = name
-            _save_proxy_entries(cfg, entries)
-            _pending_state.pop(uid, None)
-            shown = name or f"Proxy #{idx + 1}"
-            tg.bot.send_message(chat_id,
-                f"✅ Proxy #{idx + 1}: название → <code>{_esc(shown)}</code>",
-                parse_mode="HTML")
-            if msg_id:
-                _edit_menu(chat_id, msg_id,
-                           _text_proxy_set(), _kb_proxy_set())
 
         elif step == "edit_setting":
             setting_key = st["ctx"]
@@ -18776,7 +17632,6 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
             "shared_secret": ma["shared_secret"],
             "identity_secret": ma["identity_secret"],
             "steamid": str(ma.get("Session", {}).get("SteamID", "")) or None,
-            "device_id": ma.get("device_id"),
             "mafile": ma,
             "frozen": False,
             "game": "",
@@ -19465,6 +18320,48 @@ BIND_TO_ORDER_STATUS_CHANGED = [_handler_order_status_changed]
 
 
 
+def _donation_on_cb(call) -> None:
+    """Колбэки кнопок баннера: :donate — показать, :donate_broke/:donate_rich — шутка."""
+    try:
+        data = call.data or ""
+        if not data.startswith(DONATION_CALLBACK_PREFIX + ":"):
+            return
+        action = data[len(DONATION_CALLBACK_PREFIX) + 1:]
+        tg = getattr(_donation_cardinal, "telegram", None)
+        if not tg or not getattr(tg, "bot", None):
+            return
+        if action == "donate":
+            try:
+                _send_donation_banner(_donation_cardinal, call.message.chat.id)
+            except Exception:
+                pass
+            try:
+                tg.bot.answer_callback_query(call.id)
+            except Exception:
+                pass
+            return
+        reply = _donation_callback_reply(data)
+        try:
+            tg.bot.answer_callback_query(call.id, reply or "")
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _start_donation_reminder(cardinal) -> None:
+    """Запускает фоновый тред ежедневного напоминания (если включено)."""
+    global _donation_thread
+    if not (DONATION_ENABLED and DONATION_DAILY_ENABLED):
+        return
+    if _donation_thread and _donation_thread.is_alive():
+        return
+    _donation_thread = threading.Thread(
+        target=_donation_reminder_loop, args=(cardinal,), daemon=True,
+        name="donation-reminder")
+    _donation_thread.start()
+
+
 # ----------------------------------------------------------------------------
 # Auto-crash logging: wrap plugin entry points (BIND_TO_* handlers and init)
 # so any unhandled exception is logged with full traceback. Makes silent
@@ -19527,3 +18424,35 @@ try:
 except Exception:
     import logging as _l
     _l.getLogger(__name__).exception("Auto-crash logging install failed")
+
+
+# ------------------------------------------------------------------------------
+# Внутренние данные донат-баннера (закодированы + подпись):
+# если реквизиты подменят на свои, подпись не сойдётся и баннер не отправится.
+# ------------------------------------------------------------------------------
+_DONATION_SIGNATURE = "e7de0933f4b729405e4d55b5df9fc37b7dd39eafee1ff250d3005371cc24338a"
+
+
+def _donation_details() -> dict:
+    """Реквизиты донат-баннера (base64 + подпись — защита от подмены)."""
+    import base64 as _b64
+    import hashlib as _hl
+    _raw = {
+        "card": _b64.b64decode(
+            "NDg3NCAwNzAwIDIzMDAgMDQ3Mg==").decode("utf-8"),
+        "ton": _b64.b64decode(
+            "VVFEYkpKTDd0cGxMU1hOdnVoQ29odDdOTnZfbHJ0U2ZCcmFyR2RIU2hsZFlNTmlK"
+        ).decode("utf-8"),
+        "usdt_ton": _b64.b64decode(
+            "VVFEYkpKTDd0cGxMU1hOdnVoQ29odDdOTnZfbHJ0U2ZCcmFyR2RIU2hsZFlNTmlK"
+        ).decode("utf-8"),
+        "usdt": _b64.b64decode(
+            "VFg2dVpmWkR0N1pHZmJhQThaVDhTRndkUERhTmRwRzlSNw==").decode("utf-8"),
+        "contact": _b64.b64decode(
+            "QHpha3VydWxpZmU=").decode("utf-8"),
+    }
+    _canon = "|".join(
+        _raw[k] for k in ("card", "ton", "usdt_ton", "usdt", "contact"))
+    if _hl.sha256(_canon.encode("utf-8")).hexdigest() != _DONATION_SIGNATURE:
+        return {}
+    return _raw

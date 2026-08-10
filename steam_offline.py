@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import datetime
 import hashlib
-import importlib
 import io
 import csv
 import json
@@ -40,8 +39,6 @@ import random
 import re
 import secrets as pysecrets
 import string
-import subprocess
-import sys
 import threading
 import time
 import uuid as _uuid
@@ -50,53 +47,127 @@ from typing import TYPE_CHECKING, Any
 
 import requests
 
-# ── Авто-установка внешних зависимостей ──────────────────────────────────────
-# Плагин использует steampy (Steam Guard / TOTP) и rsa (входит в зависимости
-# steampy). Обычно их подтягивает соседний steam_rental.py при импорте, но на
-# случай автономного запуска ставим сами. Стиль повторяет
-# steam_rental._ensure_dependency.
-_BOOT_LOGGER = logging.getLogger("FPC.steam_offline")
-
-
-def _ensure_dependency(pip_name: str, import_name: "str | None" = None) -> bool:
-    """Гарантирует наличие пакета. Возвращает True если модуль доступен."""
-    mod_name = import_name or pip_name
-    try:
-        importlib.import_module(mod_name)
-        return True
-    except ImportError:
-        pass
-    _BOOT_LOGGER.warning(
-        "steam_offline: модуль %r не найден, ставлю %r через pip...",
-        mod_name, pip_name)
-    try:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
-             "--quiet", pip_name],
-            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-    except Exception as exc:
-        _BOOT_LOGGER.error(
-            "steam_offline: не удалось установить %r автоматически: %s. "
-            "Поставь вручную: %s -m pip install %s",
-            pip_name, exc, sys.executable, pip_name)
-        return False
-    importlib.invalidate_caches()
-    try:
-        importlib.import_module(mod_name)
-        _BOOT_LOGGER.info("steam_offline: %r успешно установлен.", pip_name)
-        return True
-    except ImportError as exc:
-        _BOOT_LOGGER.error(
-            "steam_offline: %r поставился, но импорт всё равно падает: %s",
-            pip_name, exc)
-        return False
-
-
-_ensure_dependency("steampy")
-
 if TYPE_CHECKING:
     from cardinal import Cardinal
     from FunPayAPI.updater.events import NewMessageEvent, NewOrderEvent
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 💛 DONATION BANNER — защита реквизитов автора.
+# Реквизиты закодированы (base64 + SHA-256 подпись) и лежат ВНИЗУ файла в
+# _donation_details(): если их подменить на свои, подпись не сойдётся и
+# баннер НЕ отправится. True = 1 (вкл), False = 0 (выкл).
+# ══════════════════════════════════════════════════════════════════════════════
+
+DONATION_ENABLED = True                # True = 1 (показывать баннер), False = 0
+DONATION_SHOW_ON_START = False         # True = 1 (слать при старте плагина)
+DONATION_DAILY_ENABLED = True          # True = 1 (напоминание раз в сутки)
+DONATION_DAILY_HOUR = 16               # час напоминания (0-23, МСК)
+DONATION_CALLBACK_PREFIX = "sof_dn"    # префикс колбэков кнопок баннера
+DONATION_PLUGIN_NAME = "Steam Offline"  # имя плагина в шапке баннера
+
+_donation_thread: "threading.Thread | None" = None
+_donation_cardinal = None
+
+
+def _donation_tampered() -> bool:
+    """True если реквизиты подменены (подпись не сошлась)."""
+    try:
+        return not _donation_details()
+    except Exception:
+        return True
+
+
+def _donation_banner_text() -> str:
+    """Текст донат-баннера (реквизиты — в <code>, копируются тапом)."""
+    _d = _donation_details()
+    if not _d:
+        return (
+            "⚠️ <b>Баннер повреждён.</b>\n\n"
+            "Реквизиты донат-баннера были подменены — подпись не сошлась, "
+            "поэтому баннер не отправляется. Восстанови оригинальные "
+            "значения в <code>_donation_details()</code> (внизу файла)."
+        )
+    return (
+        f"💛 <b>{DONATION_PLUGIN_NAME}</b> — бесплатный плагин для FunPay!\n"
+        "Если он помог тебе заработать — поддержи автора донатом:\n\n"
+        f"💳 Карта (европейская): <code>{{_d['card']}}</code>\n"
+        f"💎 Gram (TON): <code>{{_d['ton']}}</code>\n"
+        f"💵 USDT (TON): <code>{{_d['usdt_ton']}}</code>\n"
+        f"🪙 USDT (TRC20): <code>{{_d['usdt']}}</code>\n"
+        f"📮 Пожелания и фичи: {{_d['contact']}}\n\n"
+        "Спасибо за поддержку! ❤️\n\n"
+        "🔧 Как убрать баннер: <tg-spoiler>найди в этом файле блок "
+        "«DONATION BANNER» и поставь DONATION_ENABLED = False</tg-spoiler>"
+    )
+
+
+def _donation_banner_kb():
+    """Кнопки-приколы под баннером."""
+    from telebot import types as tbtypes  # type: ignore
+    kb = tbtypes.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        tbtypes.InlineKeyboardButton(
+            "😢 Я нищий",
+            callback_data=f"{DONATION_CALLBACK_PREFIX}:donate_broke"),
+        tbtypes.InlineKeyboardButton(
+            "😎 Я не нищий, но не задоначу",
+            callback_data=f"{DONATION_CALLBACK_PREFIX}:donate_rich"),
+    )
+    return kb
+
+
+def _send_donation_banner(cardinal, chat_id=None) -> bool:
+    """Шлёт донат-баннер оператору (всем authorized_users или конкретному chat_id)."""
+    if not DONATION_ENABLED:
+        return False
+    if _donation_tampered():
+        return False
+    tg = getattr(cardinal, "telegram", None)
+    if not tg or not getattr(tg, "bot", None):
+        return False
+    targets = ([chat_id] if chat_id is not None
+               else list(getattr(tg, "authorized_users", []) or []))
+    if not targets:
+        return False
+    text = _donation_banner_text()
+    kb = None
+    try:
+        kb = _donation_banner_kb()
+    except Exception:
+        kb = None
+    for uid in targets:
+        try:
+            tg.bot.send_message(uid, text, parse_mode="HTML",
+                                reply_markup=kb,
+                                disable_web_page_preview=True)
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "donation banner failed for uid=%s", uid, exc_info=True)
+    return True
+
+
+def _donation_callback_reply(data: str) -> str:
+    """Ответ на кнопки-приколы баннера."""
+    if (data or "").endswith("donate_broke"):
+        return "😢 Нищета — не порок. Разбогатеешь — реквизиты ждут 😉"
+    if (data or "").endswith("donate_rich"):
+        return "😎 Ок, но мы всё равно тебя любим ❤️"
+    return ""
+
+
+def _donation_reminder_loop(cardinal) -> None:
+    """Раз в сутки в DONATION_DAILY_HOUR шлёт шуточное напоминание."""
+    import datetime as _dt
+    while True:
+        try:
+            now = _dt.datetime.now()
+            if now.hour == DONATION_DAILY_HOUR and now.minute == 0:
+                _send_donation_banner(cardinal)
+        except Exception:
+            pass
+        time.sleep(60)
+
 
 # Соседний плагин — обязательная зависимость (Steam-клиент
 # и вспомогательные функции). Пулы аккаунтов раздельные!
@@ -445,13 +516,12 @@ class SteamSession:
 
 # ── Плагин-метаданные (FPC читает эти константы из файла) ────────────────────
 NAME = "Steam Offline"
-VERSION = "1.12.0"
+VERSION = "1.11.2"
 DESCRIPTION = (
     "Офлайн-выдача Steam-аккаунтов навсегда (без срока) для FunPay Cardinal. "
     "Свой пул аккаунтов, своё меню /soffline, мультивыдача "
     "(один аккаунт можно продать нескольким покупателям одновременно), "
-    "лимит Steam Guard через настраиваемую команду (по умолчанию !код), "
-    "теги аккаунтов (регион/игры/denuvo) и фильтр в !аккаунты. "
+    "лимит Steam Guard через настраиваемую команду (по умолчанию !код). "
     "Автор: @drakelovc."
 )
 CREDITS = "@drakelovc"
@@ -486,159 +556,6 @@ TEMPLATES_EN_FILE = os.path.join(STORAGE_DIR, "templates_en.json")
 BUYER_LANG_FILE = os.path.join(STORAGE_DIR, "buyer_lang.json")
 # Человекочитаемый журнал действий (ротация по размеру).
 ACTIONS_LOG_FILE = os.path.join(STORAGE_DIR, "actions.log")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 💛 DONATION BANNER — общая либа «спасибо + донат».
-# Можно вставить в любой другой плагин (скопировать этот блок целиком и
-# поменять DONATION_CALLBACK_PREFIX на префикс колбэков того плагина).
-#
-# Что делает:
-#   * шлёт оператору баннер с благодарностью и реквизитами для доната
-#     (реквизиты в <code> — в Telegram копируются тапом);
-#   * показывает баннер при старте плагина и/или при каждой команде /soffline;
-#   * каждый день в указанный час шлёт шуточное напоминание;
-#   * две кнопки-прикола: «Я нищий» и «Я не нищий, но не задоначу».
-#
-# КАК МЕНЯТЬ (гайд): константы ниже. True = 1 (вкл), False = 0 (выкл).
-#   Выключить баннер целиком:            DONATION_ENABLED = False
-#   Не слать при старте плагина:         DONATION_SHOW_ON_START = False
-#   Не слать при каждой команде:         DONATION_SHOW_ON_COMMAND = False
-#   Убрать ежедневное напоминание:       DONATION_DAILY_ENABLED = False
-#   Сменить час напоминания:             DONATION_DAILY_HOUR = 16
-#   Реквизиты/контакт — НЕ здесь: хранятся в самом низу файла
-#   (закодированы, чтобы их нельзя было заменить на свои).
-# ══════════════════════════════════════════════════════════════════════════════
-
-DONATION_ENABLED = True               # True = 1 (показывать баннер), False = 0
-# По умолчанию баннер шлётся только при команде /soffline, чтобы не
-# приходило два сообщения подряд (при старте и по команде).
-DONATION_SHOW_ON_START = False        # True = 1 (слать при старте плагина)
-DONATION_SHOW_ON_COMMAND = True       # True = 1 (слать при каждом /soffline)
-DONATION_DAILY_ENABLED = True         # True = 1 (напоминание раз в сутки)
-DONATION_DAILY_HOUR = 16              # час напоминания (0-23, МСК)
-DONATION_CALLBACK_PREFIX = "so"       # префикс колбэков кнопок (в другом плагине — свой)
-
-_donation_thread: "threading.Thread | None" = None
-
-
-def _donation_banner_text() -> str:
-    """Текст донат-баннера (реквизиты — в <code>, копируются тапом)."""
-    _d = _donation_details()
-    return (
-        "💛 <b>Steam Offline</b> — бесплатный плагин для FunPay!\n"
-        "Если он помог тебе заработать — поддержи автора донатом:\n\n"
-        f"💳 Карта (европейская): <code>{_d['card']}</code>\n"
-        f"💎 Gram (TON): <code>{_d['ton']}</code>\n"
-        f"💵 USDT (TON): <code>{_d['usdt_ton']}</code>\n"
-        f"🪙 USDT (TRC20): <code>{_d['usdt']}</code>\n"
-        f"📮 Пожелания и фичи: {_d['contact']}\n\n"
-        "Спасибо за поддержку! ❤️\n\n"
-        "🔧 Как убрать баннер: <tg-spoiler>в steam_offline.py найди "
-        "блок «DONATION BANNER» и поставь DONATION_ENABLED = False"
-        "</tg-spoiler>"
-    )
-
-
-def _donation_banner_kb():
-    """Кнопки-приколы под баннером."""
-    from telebot import types as tbtypes  # type: ignore
-    kb = tbtypes.InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        tbtypes.InlineKeyboardButton(
-            "😢 Я нищий",
-            callback_data=f"{DONATION_CALLBACK_PREFIX}:donate_broke"),
-        tbtypes.InlineKeyboardButton(
-            "😎 Я не нищий, но не задоначу",
-            callback_data=f"{DONATION_CALLBACK_PREFIX}:donate_rich"),
-    )
-    return kb
-
-
-def _send_donation_banner(cardinal: "Cardinal",
-                          chat_id: int | None = None) -> bool:
-    """Шлёт донат-баннер оператору (всем authorized_users или конкретному chat_id)."""
-    if not DONATION_ENABLED:
-        return False
-    tg = getattr(cardinal, "telegram", None)
-    if not tg or not getattr(tg, "bot", None):
-        return False
-    targets = ([chat_id] if chat_id is not None
-               else list(getattr(tg, "authorized_users", []) or []))
-    if not targets:
-        return False
-    text = _donation_banner_text()
-    kb = None
-    try:
-        kb = _donation_banner_kb()
-    except Exception:
-        kb = None
-    for uid in targets:
-        try:
-            tg.bot.send_message(uid, text, parse_mode="HTML",
-                                reply_markup=kb,
-                                disable_web_page_preview=True)
-        except Exception:
-            LOGGER.debug(
-                "steam_offline: donation banner failed for uid=%s",
-                uid, exc_info=True)
-    return True
-
-
-def _donation_callback_reply(data: str) -> str:
-    """Ответ на кнопки-приколы баннера."""
-    if (data or "").endswith("donate_broke"):
-        return "😢 Нищета — не порок. Разбогатеешь — реквизиты ждут 😉"
-    if (data or "").endswith("donate_rich"):
-        return "😎 Ок, но мы всё равно тебя любим ❤️"
-    return ""
-
-
-def _donation_reminder_loop(cardinal: "Cardinal") -> None:
-    """Раз в сутки в DONATION_DAILY_HOUR шлёт шуточное напоминание."""
-    while True:
-        try:
-            now = datetime.datetime.now()
-            nxt = now.replace(hour=DONATION_DAILY_HOUR, minute=0,
-                              second=0, microsecond=0)
-            if nxt <= now:
-                nxt += datetime.timedelta(days=1)
-            time.sleep(max(1, (nxt - now).total_seconds()))
-            if not DONATION_ENABLED or not DONATION_DAILY_ENABLED:
-                continue
-            tg = getattr(cardinal, "telegram", None)
-            for uid in list(getattr(tg, "authorized_users", []) or []):
-                try:
-                    tg.bot.send_message(
-                        uid,
-                        "😄 Улыбнись! Тебя снимает скрытая камера 📷\n\n"
-                        "А если захочешь отблагодарить за бесплатный "
-                        "плагин — реквизиты в баннере выше 😉",
-                        parse_mode="HTML",
-                        reply_markup=_donation_banner_kb(),
-                        disable_web_page_preview=True)
-                except Exception:
-                    LOGGER.debug(
-                        "steam_offline: donation reminder failed for uid=%s",
-                        uid, exc_info=True)
-        except Exception:
-            LOGGER.debug("steam_offline: donation reminder error",
-                         exc_info=True)
-            time.sleep(3600)
-
-
-def _start_donation_reminder(cardinal: "Cardinal") -> None:
-    """Запускает фоновый тред ежедневного напоминания (если включено)."""
-    global _donation_thread
-    if not (DONATION_ENABLED and DONATION_DAILY_ENABLED):
-        return
-    if _donation_thread and _donation_thread.is_alive():
-        return
-    _donation_thread = threading.Thread(
-        target=_donation_reminder_loop, args=(cardinal,), daemon=True,
-        name="steam_offline-donation-reminder")
-    _donation_thread.start()
-
 
 # ── Шаблоны по умолчанию ─────────────────────────────────────────────────────
 _DEFAULT_TEMPLATES: dict[str, str] = {
@@ -839,56 +756,6 @@ _DEFAULT_TEMPLATES_EN: dict[str, str] = {
         "   {logins}"
     ),
 }
-
-# v1.12.0: фильтр !аккаунты по тегам — шаблон «ничего не найдено по фильтру».
-_DEFAULT_TEMPLATES.setdefault(
-    "accounts_list_filtered_empty",
-    "📋 По фильтру «{filter}» ничего не найдено.\n"
-    "Попробуй другой запрос (регион / игра / denuvo) или напиши продавцу.")
-_DEFAULT_TEMPLATES_EN.setdefault(
-    "accounts_list_filtered_empty",
-    "📋 Nothing found for filter “{filter}”.\n"
-    "Try another query (region / game / denuvo) or message the seller.")
-
-
-# ── v1.12.0: теги аккаунтов + фильтр !аккаунты (чистое ядро) ──────────────────
-def _normalize_tag(s: str) -> str:
-    """lowercase, strip, схлопывание пробелов; идемпотентно."""
-    return re.sub(r"\s+", " ", str(s or "").strip().lower())
-
-
-def _account_tags(acc: dict, *, denuvo: bool, game_name: str) -> set[str]:
-    """Нормализованный набор тегов: регион + ручные теги + имя игры (+ слова) + denuvo-флаг."""
-    tags: set[str] = set()
-    region = _normalize_tag(acc.get("region", ""))
-    if region:
-        tags.add(region)
-    for t in acc.get("tags") or []:
-        n = _normalize_tag(t)
-        if n:
-            tags.add(n)
-    gn = _normalize_tag(game_name or acc.get("game", ""))
-    if gn:
-        tags.add(gn)
-        tags.update(w for w in gn.split(" ") if w)
-    tags.add("denuvo" if denuvo else "nodenuvo")
-    return tags
-
-
-def _parse_accounts_filter(text: str) -> list[str]:
-    """Убирает командное слово, возвращает нормализованные токены (может быть пусто)."""
-    parts = (text or "").strip().split(maxsplit=1)
-    if len(parts) < 2:
-        return []
-    return [_normalize_tag(tok) for tok in parts[1].split() if _normalize_tag(tok)]
-
-
-def _account_matches(tags: set[str], tokens: list[str]) -> bool:
-    """Пустой фильтр → True. Иначе каждый токен — подстрока хотя бы одного тега (AND)."""
-    if not tokens:
-        return True
-    return all(any(tok in tag for tag in tags) for tok in tokens)
-
 
 # v1.10.0: словарь старых дефолтов RU-шаблонов, которые поменялись в этом
 # релизе. Используется для бесшовной миграции: если в `templates_ru.json`
@@ -1441,22 +1308,6 @@ def find_account(alias: str) -> dict[str, Any] | None:
         if a.get("alias", "").lower() == alias.lower():
             return a
     return None
-
-
-def set_account_tags(alias: str, region: "str | None" = None,
-                     tags: "list[str] | None" = None) -> bool:
-    """v1.12.0: задать регион и/или ручные теги аккаунта (по alias)."""
-    with _lock:
-        accs = list_accounts()
-        for a in accs:
-            if a.get("alias", "").lower() == str(alias).lower():
-                if region is not None:
-                    a["region"] = _normalize_tag(region)
-                if tags is not None:
-                    a["tags"] = sorted({_normalize_tag(t) for t in tags if _normalize_tag(t)})
-                save_accounts(accs)
-                return True
-    return False
 
 
 def find_account_by_login(login: str) -> dict[str, Any] | None:
@@ -3693,6 +3544,20 @@ def _lot_activation_loop(cardinal: "Cardinal") -> None:
 def _handler_pre_init(cardinal: "Cardinal") -> None:
     global _daily_summary_thread, _sqlite_thread, _lot_activation_thread, _CARDINAL_REF_SO
     _CARDINAL_REF_SO = cardinal
+
+    # 💛 Донат-баннер (защита реквизитов автора)
+    global _donation_cardinal
+    _donation_cardinal = cardinal
+    try:
+        tg = getattr(cardinal, "telegram", None)
+        if tg:
+            tg.cbq_handler(
+                _donation_on_cb,
+                lambda c: (c.data or "").startswith("sof_dn:"))
+            _start_donation_reminder(cardinal)
+    except Exception:
+        pass
+
     _ensure_storage()
     get_config()
     list_accounts()
@@ -3764,14 +3629,6 @@ def _handler_pre_init(cardinal: "Cardinal") -> None:
             target=_lot_activation_loop, args=(cardinal,), daemon=True,
             name="steam_offline-lot-activation")
         _lot_activation_thread.start()
-    # ── Донат-баннер (общая либа): при старте плагина + напоминание ──
-    try:
-        if DONATION_SHOW_ON_START:
-            _send_donation_banner(cardinal)
-        _start_donation_reminder(cardinal)
-    except Exception:
-        LOGGER.debug("steam_offline: donation banner init failed",
-                     exc_info=True)
 
 
 def _handler_new_order(cardinal: "Cardinal", event: "NewOrderEvent") -> None:
@@ -4032,7 +3889,6 @@ def _try_offline_accounts_list(cardinal: "Cardinal", msg: Any) -> bool:
         chat_name = getattr(msg, "chat_name", None)
         author_id = getattr(msg, "author_id", None)
         lang = _get_buyer_lang(author_id)
-        filter_tokens = _parse_accounts_filter(getattr(msg, "text", "") or "")
 
         lots = list_lots()
         # ── Группируем лоты по игре ───────────────────────────────────
@@ -4100,17 +3956,6 @@ def _try_offline_accounts_list(cardinal: "Cardinal", msg: Any) -> bool:
                         continue
                     free_aliases.append(a)
 
-            # v1.12.0: фильтр по тегам (регион / игра / denuvo)
-            if filter_tokens:
-                free_aliases = [
-                    a for a in free_aliases
-                    if _account_matches(
-                        _account_tags(find_account(a) or {},
-                                      denuvo=grp["is_denuvo"],
-                                      game_name=grp["game_name"]),
-                        filter_tokens)
-                ]
-
             if not free_aliases:
                 continue
 
@@ -4143,13 +3988,8 @@ def _try_offline_accounts_list(cardinal: "Cardinal", msg: Any) -> bool:
             lines.append(line)
 
         if not lines:
-            if filter_tokens:
-                text = _render_template("accounts_list_filtered_empty",
-                                        buyer_id=author_id,
-                                        filter=" ".join(filter_tokens))
-            else:
-                text = _render_template("accounts_list_empty",
-                                        buyer_id=author_id)
+            text = _render_template("accounts_list_empty",
+                                    buyer_id=author_id)
         else:
             text = _render_template("accounts_list",
                                     buyer_id=author_id,
@@ -4184,8 +4024,7 @@ def _try_offline_help(cardinal: "Cardinal", msg: Any) -> bool:
                 f"🔐 <b>{guardik}</b> [login] — get Steam Guard code\n"
                 "   (without login — auto-detect your delivery)\n\n"
                 "📊 <b>!status</b> — remaining code count\n\n"
-                "🎮 <b>!accounts [filter]</b> — list of lots with free accounts "
-                "(e.g. !accounts RU / denuvo / gta)\n\n"
+                "🎮 <b>!accounts</b> — list of lots with free accounts\n\n"
                 "🌐 <b>!rusrent</b> — switch chat to Russian\n\n"
                 "💡 Commands work only in chat with the seller."
             )
@@ -4195,8 +4034,7 @@ def _try_offline_help(cardinal: "Cardinal", msg: Any) -> bool:
                 f"🔐 <b>{guardik}</b> [логин] — получить Steam Guard код\n"
                 "   (без логина — автоопределение вашей выдачи)\n\n"
                 "📊 <b>!статус</b> — остаток выдач кода\n\n"
-                "🎮 <b>!аккаунты [фильтр]</b> — список лотов со свободными аккаунтами "
-                "(напр. !аккаунты RU / denuvo / gta)\n\n"
+                "🎮 <b>!аккаунты</b> — список лотов со свободными аккаунтами\n\n"
                 "🌐 <b>!engrent</b> — switch chat to English\n\n"
                 "💡 Команды работают только в чате с продавцом."
             )
@@ -6145,18 +5983,7 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
     def cmd_soffline(message):
         if not _is_admin(message.from_user.id):
             return
-        if DONATION_ENABLED and DONATION_SHOW_ON_COMMAND:
-            # Одно сообщение — баннер. Кнопки баннера («Я нищий» /
-            # «Я не нищий, но не задоначу») ведут прямо в меню плагина.
-            try:
-                _send_donation_banner(cardinal, message.chat.id)
-            except Exception:
-                LOGGER.debug(
-                    "steam_offline: donation banner on /soffline failed",
-                    exc_info=True)
-                _send_menu(message.chat.id)
-        else:
-            _send_menu(message.chat.id)
+        _send_menu(message.chat.id)
 
     def cmd_soffline_cancel(message):
         if not _is_admin(message.from_user.id):
@@ -6277,14 +6104,6 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
                     tg.bot.delete_message(chat_id, msg_id)
                 except Exception:
                     pass
-            elif action in ("donate_broke", "donate_rich"):
-                reply = _donation_callback_reply(call.data)
-                if reply:
-                    tg.bot.answer_callback_query(call.id, reply)
-                else:
-                    tg.bot.answer_callback_query(call.id)
-                # Переход из баннера прямо в меню плагина
-                _edit_menu(chat_id, msg_id, _text_main(), _kb_main())
             elif action == "cancel_input":
                 _pending_state.pop(uid, None)
                 _edit_menu(chat_id, msg_id, _text_main(), _kb_main())
@@ -8255,43 +8074,6 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
 
     tg.msg_handler(cmd_guide, commands=["soffline_guide"])
 
-    # v1.12.0: задать теги аккаунта — /so_tag <alias> region=<RU> tags=<a,b,c>
-    def cmd_settag(m):
-        raw = (m.text or "").split(maxsplit=1)
-        if len(raw) < 2:
-            tg.bot.send_message(
-                m.chat.id,
-                "Формат: <code>/so_tag &lt;alias&gt; region=RU tags=fps,co-op</code>\n"
-                "Можно указать только region или только tags.",
-                parse_mode="HTML")
-            return
-        args = raw[1].split()
-        alias = args[0]
-        region = None
-        tags = None
-        for tok in args[1:]:
-            if tok.startswith("region="):
-                region = tok.split("=", 1)[1]
-            elif tok.startswith("tags="):
-                tags = [t for t in tok.split("=", 1)[1].replace(";", ",").split(",") if t.strip()]
-        if region is None and tags is None:
-            tg.bot.send_message(m.chat.id, "Нечего задавать: укажи region= и/или tags=.")
-            return
-        ok = set_account_tags(alias, region=region, tags=tags)
-        if not ok:
-            tg.bot.send_message(m.chat.id, f"❌ Аккаунт <code>{alias}</code> не найден.",
-                                parse_mode="HTML")
-            return
-        acc = find_account(alias) or {}
-        tg.bot.send_message(
-            m.chat.id,
-            f"✅ Теги обновлены для <code>{alias}</code>\n"
-            f"🌍 Регион: <b>{acc.get('region') or '—'}</b>\n"
-            f"🏷 Теги: <b>{', '.join(acc.get('tags') or []) or '—'}</b>",
-            parse_mode="HTML")
-
-    tg.msg_handler(cmd_settag, commands=["so_tag"])
-
     # /soffline_test — тест Steam Guard на фейковых данных
     def cmd_test(m) -> None:
         kb = tbtypes.InlineKeyboardMarkup(row_width=2)
@@ -8348,6 +8130,48 @@ BIND_TO_NEW_ORDER = [_handler_new_order]
 BIND_TO_NEW_MESSAGE = [_handler_new_message]
 BIND_TO_ORDER_STATUS_CHANGED = [_handler_order_status_changed]
 
+
+
+def _donation_on_cb(call) -> None:
+    """Колбэки кнопок баннера: :donate — показать, :donate_broke/:donate_rich — шутка."""
+    try:
+        data = call.data or ""
+        if not data.startswith(DONATION_CALLBACK_PREFIX + ":"):
+            return
+        action = data[len(DONATION_CALLBACK_PREFIX) + 1:]
+        tg = getattr(_donation_cardinal, "telegram", None)
+        if not tg or not getattr(tg, "bot", None):
+            return
+        if action == "donate":
+            try:
+                _send_donation_banner(_donation_cardinal, call.message.chat.id)
+            except Exception:
+                pass
+            try:
+                tg.bot.answer_callback_query(call.id)
+            except Exception:
+                pass
+            return
+        reply = _donation_callback_reply(data)
+        try:
+            tg.bot.answer_callback_query(call.id, reply or "")
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _start_donation_reminder(cardinal) -> None:
+    """Запускает фоновый тред ежедневного напоминания (если включено)."""
+    global _donation_thread
+    if not (DONATION_ENABLED and DONATION_DAILY_ENABLED):
+        return
+    if _donation_thread and _donation_thread.is_alive():
+        return
+    _donation_thread = threading.Thread(
+        target=_donation_reminder_loop, args=(cardinal,), daemon=True,
+        name="donation-reminder")
+    _donation_thread.start()
 
 
 # ----------------------------------------------------------------------------
@@ -8414,23 +8238,35 @@ except Exception:
     _l.getLogger(__name__).exception("Auto-crash logging install failed")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Внутренние данные донат-баннера. Хранятся здесь (внизу файла) и в
-# закодированном виде, чтобы покупатель не мог заменить реквизиты на свои.
-# Для замены реквизитов: раскодируй/перекодируй base64-строки ниже.
-# ─────────────────────────────────────────────────────────────────────────────
-def _donation_details() -> dict[str, str]:
-    """Реквизиты донат-баннера (base64 — защита от случайной подмены)."""
+# ------------------------------------------------------------------------------
+# Внутренние данные донат-баннера (закодированы + подпись):
+# если реквизиты подменят на свои, подпись не сойдётся и баннер не отправится.
+# ------------------------------------------------------------------------------
+_DONATION_SIGNATURE = "e7de0933f4b729405e4d55b5df9fc37b7dd39eafee1ff250d3005371cc24338a"
+
+
+def _donation_details() -> dict:
+    """Реквизиты донат-баннера (base64 + подпись — защита от подмены)."""
     import base64 as _b64
-    _dec = _b64.b64decode
-    return {
-        "card": _dec("NDg3NCAwNzAwIDIzMDAgMDQ3Mg==").decode("utf-8"),
-        "ton": _dec(
+    import hashlib as _hl
+    _raw = {
+        "card": _b64.b64decode(
+            "NDg3NCAwNzAwIDIzMDAgMDQ3Mg==").decode("utf-8"),
+        "ton": _b64.b64decode(
             "VVFEYkpKTDd0cGxMU1hOdnVoQ29odDdOTnZfbHJ0U2ZCcmFyR2RIU2hsZFlNTmlK"
         ).decode("utf-8"),
-        "usdt_ton": _dec(
+        "usdt_ton": _b64.b64decode(
             "VVFEYkpKTDd0cGxMU1hOdnVoQ29odDdOTnZfbHJ0U2ZCcmFyR2RIU2hsZFlNTmlK"
         ).decode("utf-8"),
-        "usdt": _dec("VFg2dVpmWkR0N1pHZmJhQThaVDhTRndkUERhTmRwRzlSNw==").decode("utf-8"),
-        "contact": _dec("QHpha3VydWxpZmU=").decode("utf-8"),
+        "usdt": _b64.b64decode(
+            "VFg2dVpmWkR0N1pHZmJhQThaVDhTRndkUERhTmRwRzlSNw==").decode("utf-8"),
+        "contact": _b64.b64decode(
+            "QHpha3VydWxpZmU=").decode("utf-8"),
     }
+    _canon = "|".join(
+        _raw[k] for k in ("card", "ton", "usdt_ton", "usdt", "contact"))
+    if _hl.sha256(_canon.encode("utf-8")).hexdigest() != _DONATION_SIGNATURE:
+        return {}
+    return _raw
+
+

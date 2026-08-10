@@ -15,8 +15,6 @@ import base64
 import datetime
 import hashlib
 import hmac
-import io
-import csv
 import json
 import logging
 import os
@@ -44,17 +42,133 @@ if TYPE_CHECKING:
     from cardinal import Cardinal
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 💛 DONATION BANNER — защита реквизитов автора.
+# Реквизиты закодированы (base64 + SHA-256 подпись) и лежат ВНИЗУ файла в
+# _donation_details(): если их подменить на свои, подпись не сойдётся и
+# баннер НЕ отправится. True = 1 (вкл), False = 0 (выкл).
+# ══════════════════════════════════════════════════════════════════════════════
+
+DONATION_ENABLED = True                # True = 1 (показывать баннер), False = 0
+DONATION_SHOW_ON_START = False         # True = 1 (слать при старте плагина)
+DONATION_DAILY_ENABLED = True          # True = 1 (напоминание раз в сутки)
+DONATION_DAILY_HOUR = 16               # час напоминания (0-23, МСК)
+DONATION_CALLBACK_PREFIX = "nsg_dn"    # префикс колбэков кнопок баннера
+DONATION_PLUGIN_NAME = "NS.Gifts AutoDelivery"  # имя плагина в шапке баннера
+
+_donation_thread: "threading.Thread | None" = None
+_donation_cardinal = None
+
+
+def _donation_tampered() -> bool:
+    """True если реквизиты подменены (подпись не сошлась)."""
+    try:
+        return not _donation_details()
+    except Exception:
+        return True
+
+
+def _donation_banner_text() -> str:
+    """Текст донат-баннера (реквизиты — в <code>, копируются тапом)."""
+    _d = _donation_details()
+    if not _d:
+        return (
+            "⚠️ <b>Баннер повреждён.</b>\n\n"
+            "Реквизиты донат-баннера были подменены — подпись не сошлась, "
+            "поэтому баннер не отправляется. Восстанови оригинальные "
+            "значения в <code>_donation_details()</code> (внизу файла)."
+        )
+    return (
+        f"💛 <b>{DONATION_PLUGIN_NAME}</b> — бесплатный плагин для FunPay!\n"
+        "Если он помог тебе заработать — поддержи автора донатом:\n\n"
+        f"💳 Карта (европейская): <code>{{_d['card']}}</code>\n"
+        f"💎 Gram (TON): <code>{{_d['ton']}}</code>\n"
+        f"💵 USDT (TON): <code>{{_d['usdt_ton']}}</code>\n"
+        f"🪙 USDT (TRC20): <code>{{_d['usdt']}}</code>\n"
+        f"📮 Пожелания и фичи: {{_d['contact']}}\n\n"
+        "Спасибо за поддержку! ❤️\n\n"
+        "🔧 Как убрать баннер: <tg-spoiler>найди в этом файле блок "
+        "«DONATION BANNER» и поставь DONATION_ENABLED = False</tg-spoiler>"
+    )
+
+
+def _donation_banner_kb():
+    """Кнопки-приколы под баннером."""
+    from telebot import types as tbtypes  # type: ignore
+    kb = tbtypes.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        tbtypes.InlineKeyboardButton(
+            "😢 Я нищий",
+            callback_data=f"{DONATION_CALLBACK_PREFIX}:donate_broke"),
+        tbtypes.InlineKeyboardButton(
+            "😎 Я не нищий, но не задоначу",
+            callback_data=f"{DONATION_CALLBACK_PREFIX}:donate_rich"),
+    )
+    return kb
+
+
+def _send_donation_banner(cardinal, chat_id=None) -> bool:
+    """Шлёт донат-баннер оператору (всем authorized_users или конкретному chat_id)."""
+    if not DONATION_ENABLED:
+        return False
+    if _donation_tampered():
+        return False
+    tg = getattr(cardinal, "telegram", None)
+    if not tg or not getattr(tg, "bot", None):
+        return False
+    targets = ([chat_id] if chat_id is not None
+               else list(getattr(tg, "authorized_users", []) or []))
+    if not targets:
+        return False
+    text = _donation_banner_text()
+    kb = None
+    try:
+        kb = _donation_banner_kb()
+    except Exception:
+        kb = None
+    for uid in targets:
+        try:
+            tg.bot.send_message(uid, text, parse_mode="HTML",
+                                reply_markup=kb,
+                                disable_web_page_preview=True)
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "donation banner failed for uid=%s", uid, exc_info=True)
+    return True
+
+
+def _donation_callback_reply(data: str) -> str:
+    """Ответ на кнопки-приколы баннера."""
+    if (data or "").endswith("donate_broke"):
+        return "😢 Нищета — не порок. Разбогатеешь — реквизиты ждут 😉"
+    if (data or "").endswith("donate_rich"):
+        return "😎 Ок, но мы всё равно тебя любим ❤️"
+    return ""
+
+
+def _donation_reminder_loop(cardinal) -> None:
+    """Раз в сутки в DONATION_DAILY_HOUR шлёт шуточное напоминание."""
+    import datetime as _dt
+    while True:
+        try:
+            now = _dt.datetime.now()
+            if now.hour == DONATION_DAILY_HOUR and now.minute == 0:
+                _send_donation_banner(cardinal)
+        except Exception:
+            pass
+        time.sleep(60)
+
+
 # =========================================================================
 # Метаданные плагина (обязательные для FPC)
 # =========================================================================
 
 NAME = "NS.Gifts AutoDelivery"
-VERSION = "0.6.1"
+VERSION = "0.5.1"
 DESCRIPTION = (
     "Автовыдача кодов и Steam-пополнений через ns.gifts, авто-обновление цен с "
     "наценкой, чат-команды, Telegram inline-keyboard панель управления, "
-    "команды /nsgifts_guide, /nsgifts_test и /ns_margin, рабочие часы, "
-    "стоковые/нулевой-баланс алерты, отчёт по марже с CSV-экспортом."
+    "команды /nsgifts_guide и /nsgifts_test, рабочие часы, описания настроек."
 )
 CREDITS = "@drakelovc"
 UUID = "8b4e2c9a-7f31-4a55-9d8b-1e2f6a7c5b03"
@@ -113,10 +227,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "low_balance_threshold_usd": 5.0,
     "notify_chat_id": 0,
     "auto_disable_oos_lots": True,
-    # v0.6.0:
-    "stock_alerts_enabled": True,        # алерты OOS / нулевой баланс
-    "alert_suppress_sec": 3600,          # антиспам алертов (окно дедупликации)
-    "ns_accounts": [],                   # [{name, api_key}] — мульти-аккаунт + failover
     # Steam-login confirmation
     "confirm_steam_login": True,
     "confirm_timeout_min": 5,            # ждём ответ N минут
@@ -419,8 +529,6 @@ class Runtime:
         self.stock_cache_ts: float = 0.0
         self.pending_chat_inputs: dict[int, dict[str, Any]] = {}
         self.pending_tg_states: dict[tuple[int, int], str] = {}
-        # mapping-wizard transient state: (chat_id, user_id) -> {results, service_id}
-        self.wizard: dict[tuple[int, int], dict[str, Any]] = {}
         # ackn: order_id -> ConfirmState (в state хранится chat_id для матчинга)
         self.pending_confirms: dict[Any, dict[str, Any]] = {}
         self.tg_registered: bool = False
@@ -563,102 +671,6 @@ def _db_stats(since_ts: int) -> dict[str, Any]:
         "cost_usd": round(cost_usd_total, 4),
         "by_currency": by_cur,
     }
-
-
-def _db_recent_deliveries(since_ts: int, limit: int = 1000) -> list[dict[str, Any]]:
-    """Return delivery records since ``since_ts`` (newest first). Reads the DB only."""
-    if R.db is None:
-        return []
-    with R.db_lock:
-        rows = R.db.execute(
-            "SELECT * FROM deliveries WHERE created_at >= ? "
-            "ORDER BY created_at DESC LIMIT ?",
-            (int(since_ts), int(limit)),
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-_MARGIN_PERIOD_SPANS = {
-    "day": 86400, "week": 7 * 86400, "month": 30 * 86400,
-    "all": 365 * 50 * 86400,
-}
-_MARGIN_PERIOD_LABELS = {
-    "day": "за сутки", "week": "за неделю", "month": "за месяц", "all": "за всё время",
-}
-_MARGIN_CSV_COLUMNS = [
-    "order_id", "created_at", "service_name", "currency",
-    "ns_cost_usd", "sold_price", "profit_local", "profit_usd", "status",
-]
-
-
-def _margin_since(period: str, now: int | None = None) -> int:
-    now = int(time.time()) if now is None else int(now)
-    return now - _MARGIN_PERIOD_SPANS.get(period, 86400)
-
-
-def _fmt_num(v: Any) -> str:
-    """Format a numeric field, marking missing values."""
-    if v is None or v == "":
-        return "—"
-    try:
-        return f"{float(v):.2f}"
-    except (TypeError, ValueError):
-        return str(v)
-
-
-def _margin_report_text(period: str = "day", now: int | None = None,
-                        max_rows: int = 15) -> str:
-    """Render a Russian margin report over Delivery_Records for the period.
-
-    Reads the ``deliveries`` table only (no NS API). Missing numeric fields are
-    shown as "—".
-    """
-    since = _margin_since(period, now)
-    records = _db_recent_deliveries(since)
-    agg = _aggregate_margin(records, since)
-    label = _MARGIN_PERIOD_LABELS.get(period, period)
-    total = agg["total"]
-    lines = [
-        f"<b>NS.Gifts — маржа {label}</b>",
-        f"Заказов (completed): <b>{total['count']}</b>",
-        f"Оборот всего: <b>{_fmt_num(total['revenue'])}</b>",
-        f"Прибыль всего: <b>{_fmt_num(total['profit'])}</b> (в валютах лотов)",
-        f"Прибыль USD: <b>{total['profit_usd']:.4f}</b>",
-        "",
-    ]
-    if agg["by_currency"]:
-        lines.append("<b>По валютам:</b>")
-        for cur, b in agg["by_currency"].items():
-            sym = _currency_symbol(cur) or str(cur).upper()
-            lines.append(
-                f"• {sym}: заказов <b>{b['count']}</b>, оборот "
-                f"<b>{_fmt_num(b['revenue'])}</b>, прибыль <b>{_fmt_num(b['profit'])}</b>")
-        lines.append("")
-    completed = [r for r in records if str(r.get("status")) == "completed"]
-    if completed:
-        lines.append(f"<b>Последние выдачи (до {max_rows}):</b>")
-        for r in completed[:max_rows]:
-            sym = _currency_symbol(r.get("currency") or "") or str(r.get("currency") or "?").upper()
-            lines.append(
-                f"• #{r.get('order_id')} {(_html_escape(str(r.get('service_name') or '?')))[:30]} — "
-                f"себест. {_fmt_num(r.get('ns_cost_local'))}{sym}, "
-                f"продажа {_fmt_num(r.get('sold_price'))}{sym}, "
-                f"профит {_fmt_num(r.get('profit_local'))}{sym}")
-    else:
-        lines.append("Завершённых выдач за период нет.")
-    return "\n".join(lines)
-
-
-def _margin_csv(period: str = "all", now: int | None = None) -> str:
-    """Build a CSV export of delivery records for the period (DB only, no API)."""
-    since = _margin_since(period, now)
-    records = _db_recent_deliveries(since, limit=100000)
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(_MARGIN_CSV_COLUMNS)
-    for r in records:
-        writer.writerow([r.get(c, "") if r.get(c) is not None else "" for c in _MARGIN_CSV_COLUMNS])
-    return buf.getvalue()
 
 
 # =========================================================================
@@ -855,63 +867,6 @@ def _normalize_ns_status(raw: Any) -> str:
     return _NS_STATUS_ALIASES.get(s, s)
 
 
-# ============================================================================
-# v0.6.0 — чистое ядро (alert/accounts/margin/mask)
-# ============================================================================
-def _mask_key(key: str) -> str:
-    s = str(key or "")
-    return (s[:4] + "…" + s[-3:]) if len(s) > 8 else "***"
-
-
-def _account_order(accounts: list, start_index: int = 0) -> list:
-    """Детерминированный порядок попыток: ротация списка от start_index."""
-    n = len(accounts)
-    if n == 0:
-        return []
-    si = int(start_index) % n
-    return [accounts[(si + i) % n] for i in range(n)]
-
-
-_FAILOVER_KINDS = {"insufficient", "account_error", "auth", "rate_limited"}
-
-
-def _should_failover(error_kind: str) -> bool:
-    return str(error_kind) in _FAILOVER_KINDS
-
-
-def _alert_transition(prev_active: bool, condition_now: bool, last_ts: float,
-                      now: float, suppress_sec: int) -> tuple[bool, bool]:
-    """Возвращает (send_now, new_active). Rising edge → send; повтор только после окна; clear → reset."""
-    if not condition_now:
-        return False, False
-    if not prev_active:
-        return True, True
-    send = (now - float(last_ts or 0)) >= suppress_sec
-    return send, True
-
-
-def _aggregate_margin(records: list, since_ts: float) -> dict:
-    """Агрегация по Delivery_Records: per-currency {count, revenue, profit} + итоги.
-    Считает только completed-записи с ts >= since_ts. Читает только переданные записи."""
-    by_cur: dict[str, dict] = {}
-    total = {"count": 0, "revenue": 0.0, "profit": 0.0, "profit_usd": 0.0}
-    for r in records:
-        if str(r.get("status")) != "completed":
-            continue
-        if float(r.get("created_at", 0) or 0) < since_ts:
-            continue
-        cur = str(r.get("currency") or "?")
-        b = by_cur.setdefault(cur, {"count": 0, "revenue": 0.0, "profit": 0.0})
-        b["count"] += 1
-        b["revenue"] += float(r.get("sold_price") or 0)
-        b["profit"] += float(r.get("profit_local") or 0)
-        total["count"] += 1
-        total["revenue"] += float(r.get("sold_price") or 0)
-        total["profit"] += float(r.get("profit_local") or 0)
-        total["profit_usd"] += float(r.get("profit_usd") or 0)
-    return {"by_currency": by_cur, "total": total}
-
-
 def _resolve_lot_mapping(lot_id: str | int | None,
                          subcategory_id: int | None = None,
                          description: str | None = None) -> dict[str, Any] | None:
@@ -922,67 +877,6 @@ def _resolve_lot_mapping(lot_id: str | int | None,
     if m and m.get("enabled", True):
         return {**m, "lot_id": str(lot_id)}
     return None
-
-
-# ============================================================================
-# v0.6.0 — мастер привязки (поиск по каталогу NS → выбор → lot_id → mapping)
-# ============================================================================
-
-def _wizard_search(query: str, limit: int = 20) -> list[dict[str, Any]]:
-    """Search the NS catalog by service name (substring, case-insensitive) or by
-    exact service_id. Returns up to ``limit`` results. Reads the cached stock."""
-    q = str(query or "").strip().lower()
-    if not q:
-        return []
-    out: list[dict[str, Any]] = []
-    stock = _get_stock()
-    for cat in stock.get("categories", []):
-        for svc in cat.get("services", []):
-            sid = svc.get("service_id")
-            name = str(svc.get("service_name") or "")
-            if q in name.lower() or q == str(sid):
-                out.append({
-                    "service_id": sid,
-                    "service_name": name,
-                    "price": svc.get("price"),
-                    "in_stock": svc.get("in_stock"),
-                    "category_name": cat.get("category_name"),
-                })
-                if len(out) >= limit:
-                    return out
-    return out
-
-
-def _build_lot_mapping(service_id: int | str) -> dict[str, Any]:
-    """Build a Lot_Mapping dict in the existing shape (resolvable by _resolve_lot_mapping)."""
-    return {
-        "service_id": int(service_id),
-        "type": "code",
-        "amount_field": "quantity",
-        "extra_fields": {},
-        "markup_percent": None,
-        "min_price": None,
-        "currency": None,
-        "enabled": True,
-    }
-
-
-def _wizard_save_mapping(lot_id: str | int, service_id: int | str) -> dict[str, Any]:
-    """Persist a wizard-built mapping for ``lot_id`` → ``service_id`` and return it."""
-    mapping = _build_lot_mapping(service_id)
-    R.mappings.setdefault("lots", {})[str(lot_id)] = mapping
-    _save_mappings()
-    return mapping
-
-
-def _wizard_results_kb(results: list[dict[str, Any]]) -> K:
-    """Inline keyboard of search results (one service per row, bounded)."""
-    kb = K(row_width=1)
-    for r in results[:20]:
-        sid = r.get("service_id")
-        name = str(r.get("service_name") or "")[:40]
-        kb.add(B(f"[{sid}] {name}", callback_data=f"{CBP}:wizard_pick:{sid}"))
-    return kb
 
 
 def _format_pins(pins: list[Any]) -> str:
@@ -2328,8 +2222,6 @@ def _price_sync_loop(cardinal: "Cardinal") -> None:
                     )
                 for err in result.get("errors", []):
                     logger.warning(f"NS.Gifts price sync: {err}")
-            # v0.6.0: стоковые / нулевой-баланс алерты раз в цикл
-            _maybe_stock_alerts(cardinal)
         except Exception:
             logger.error("NS.Gifts: ошибка цикла авто-цен", exc_info=True)
         time.sleep(interval)
@@ -2363,76 +2255,6 @@ def _maybe_low_balance_alert(cardinal: "Cardinal") -> None:
             )
     except Exception:
         logger.debug("NS.Gifts: low_balance check failed", exc_info=True)
-
-
-# =========================================================================
-# v0.6.0 — стоковые / нулевой-баланс алерты (через _alert_transition)
-# =========================================================================
-
-def _alert_state() -> dict[str, Any]:
-    """Persisted per-condition alert state: key -> {active: bool, last_ts: float}."""
-    return R.mappings.setdefault("_alert_state", {})
-
-
-def _run_alert(cardinal: "Cardinal", key: str, condition_now: bool,
-               message: str, now: float, suppress_sec: int) -> bool:
-    """Drive one alert condition through _alert_transition; send on rising edge or
-    after the suppression window, reset on recovery. Returns whether it sent."""
-    st = _alert_state()
-    cur = st.get(key) or {"active": False, "last_ts": 0.0}
-    send, new_active = _alert_transition(
-        bool(cur.get("active")), condition_now,
-        float(cur.get("last_ts") or 0), now, suppress_sec)
-    if send:
-        try:
-            _notify_tg(cardinal, message)
-        except Exception:
-            logger.debug("NS.Gifts: alert notify failed", exc_info=True)
-    new_last = now if send else (float(cur.get("last_ts") or 0) if new_active else 0.0)
-    st[key] = {"active": new_active, "last_ts": new_last}
-    return send
-
-
-def _maybe_stock_alerts(cardinal: "Cardinal", now: float | None = None) -> None:
-    """Periodic OOS / zero-balance alerts for mapped services. Gated by
-    ``stock_alerts_enabled``; failure-resilient; persists alert state."""
-    if not R.settings.get("stock_alerts_enabled", True):
-        return
-    if not R.client or not R.client.configured:
-        return
-    now = time.time() if now is None else now
-    suppress = int(R.settings.get("alert_suppress_sec", 3600))
-    touched = False
-    # Zero balance
-    try:
-        bal = R.client.check_balance()
-        usd = float(bal.get("balance") or 0)
-        _run_alert(cardinal, "zero_balance", usd <= 0,
-                   f"⛔️ <b>Нулевой баланс NS.Gifts:</b> {usd:.4f} USD.", now, suppress)
-        touched = True
-    except Exception:
-        logger.debug("NS.Gifts: zero-balance alert check failed", exc_info=True)
-    # Out-of-stock per mapped service
-    try:
-        mapped = {}
-        for lot_id, m in (R.mappings.get("lots") or {}).items():
-            sid = m.get("service_id")
-            if sid:
-                mapped[int(sid)] = m
-        for sid in mapped:
-            svc = _find_service(sid)
-            in_stock = int((svc or {}).get("in_stock") or 0)
-            name = (svc or {}).get("service_name") or f"service {sid}"
-            _run_alert(cardinal, f"oos:{sid}", svc is not None and in_stock == 0,
-                       f"⚠️ <b>Нет в наличии (NS.Gifts):</b> [{sid}] {name}.", now, suppress)
-        touched = True
-    except Exception:
-        logger.debug("NS.Gifts: OOS alert check failed", exc_info=True)
-    if touched:
-        try:
-            _save_mappings()
-        except Exception:
-            logger.debug("NS.Gifts: save alert state failed", exc_info=True)
 
 
 # =========================================================================
@@ -2508,38 +2330,7 @@ def _panel_text() -> str:
         f"₸ <b>{_rate_display(s.get('usd_to_kzt_rate'))}</b>",
         f"Минимальная цена: <b>{float(min_p):.2f}</b>",
     ]
-    hints = []
-    if not (R.client and R.client.configured):
-        hints.append("• загрузите NS-учётку (⚙️ Настройки → 📥 Загрузить NS-учётку)")
-    if not (R.mappings.get("lots") or {}):
-        hints.append("• привяжите лот к услуге (🛠 Инструменты → 🧭 Мастер привязки)")
-    if not s.get("autodelivery_enabled"):
-        hints.append("• включите Автовыдачу (🚚 Выдача)")
-    if hints:
-        lines.append("\n<b>⚠️ Чтобы заработало:</b>")
-        lines.extend(hints)
-    else:
-        lines.append("\n✅ Всё готово к работе.")
     return "\n".join(lines)
-
-
-def _help_text() -> str:
-    return (
-        "<b>❓ Как настроить NS.Gifts</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "1️⃣ <b>Учётка NS.Gifts.</b> «⚙️ Настройки» → «📥 Загрузить NS-учётку» — "
-        "введите данные API NS.Gifts. В шапке появится «Учётка NS: ✅», "
-        "а «🛠 Инструменты → 💰 Баланс» покажет ваш баланс.\n\n"
-        "2️⃣ <b>Привязка лота.</b> «🛠 Инструменты → 🧭 Мастер привязки» → найдите "
-        "услугу по названию/service_id и привяжите к ней <b>lot_id</b> вашего лота "
-        "FunPay. Можно загрузить готовый <code>mappings.json</code>.\n\n"
-        "3️⃣ <b>Цены.</b> «💲 Цены» — наценка, минимальная цена, курсы валют; "
-        "«🔁 Синхр. цены» обновит цены лотов по каталогу NS.\n\n"
-        "4️⃣ <b>Включите Автовыдачу</b> в «🚚 Выдача». На оплаченный заказ бот сам "
-        "купит товар в NS.Gifts и выдаст покупателю (для Steam-лотов сначала "
-        "спросит логин).\n\n"
-        "💡 lot_id берётся из ссылки на лот FunPay: <code>offer?id=…</code>"
-    )
 
 
 def _panel_kb() -> K:
@@ -2558,7 +2349,6 @@ def _panel_kb() -> K:
     )
     kb.add(
         B("⚙️ Настройки", callback_data=f"{CBP}:settings"),
-        B("❓ Как настроить", callback_data=f"{CBP}:help"),
     )
     kb.add(B("🔄 Обновить", callback_data=f"{CBP}:refresh"))
     return kb
@@ -2590,7 +2380,6 @@ def _tools_kb() -> K:
     )
     kb.add(
         B("📝 Привязки", callback_data=f"{CBP}:mappings"),
-        B("🧭 Мастер привязки", callback_data=f"{CBP}:wizard"),
     )
     kb.add(
         B(f"{on if s['chat_commands_enabled'] else off} Чат-команды",
@@ -2825,13 +2614,7 @@ def _open_panel(cardinal: "Cardinal", chat_id: int, message_id: int | None = Non
         else:
             tg.bot.send_message(chat_id, _panel_text(), parse_mode="HTML",
                                 reply_markup=_panel_kb())
-    except Exception as _open_ex:
-        # "message is not modified" — идемпотентная перерисовка панели
-        # (тот же текст и тот же reply_markup), не шумим traceback'ом.
-        if "not modified" in str(_open_ex).lower():
-            logger.debug(
-                "NS.Gifts: open_panel noop (message not modified)")
-            return
+    except Exception:
         logger.error("NS.Gifts: open_panel failed", exc_info=True)
 
 
@@ -2877,37 +2660,6 @@ def _handle_callback(cardinal: "Cardinal", call) -> None:
             _save_settings()
         _open_panel(cardinal, call.message.chat.id, call.message.message_id)
         try:
-            tg.bot.answer_callback_query(call.id)
-        except Exception:
-            pass
-        return
-
-    # --- mapping wizard: start search ---
-    if action == "wizard":
-        key = (call.message.chat.id, call.from_user.id)
-        R.wizard.pop(key, None)
-        R.pending_tg_states[key] = "wizard_query"
-        try:
-            tg.bot.send_message(
-                call.message.chat.id,
-                "🧭 <b>Мастер привязки</b>\n\nВведите название или service_id для поиска "
-                "по каталогу NS.Gifts:", parse_mode="HTML")
-            tg.bot.answer_callback_query(call.id)
-        except Exception:
-            pass
-        return
-
-    # --- mapping wizard: a service was picked → ask for lot_id ---
-    if action == "wizard_pick" and len(parts) >= 3:
-        key = (call.message.chat.id, call.from_user.id)
-        sid = parts[2]
-        R.wizard.setdefault(key, {})["service_id"] = sid
-        R.pending_tg_states[key] = "wizard_lot"
-        try:
-            tg.bot.send_message(
-                call.message.chat.id,
-                f"Выбран сервис <code>{sid}</code>.\n\nВведите <b>lot_id</b> FunPay "
-                "для привязки (число):", parse_mode="HTML")
             tg.bot.answer_callback_query(call.id)
         except Exception:
             pass
@@ -2992,20 +2744,6 @@ def _handle_callback(cardinal: "Cardinal", call) -> None:
                 )
             text = f"<b>Привязки ({len(lots)}):</b>\n" + "\n".join(rows)
         tg.bot.send_message(call.message.chat.id, text, parse_mode="HTML")
-        try:
-            tg.bot.answer_callback_query(call.id)
-        except Exception:
-            pass
-        return
-
-    if action == "help":
-        kb = K().add(B("◀️ Назад", callback_data=f"{CBP}:home"))
-        try:
-            tg.bot.edit_message_text(_help_text(), call.message.chat.id,
-                                     call.message.message_id, parse_mode="HTML",
-                                     reply_markup=kb)
-        except Exception:
-            pass
         try:
             tg.bot.answer_callback_query(call.id)
         except Exception:
@@ -3332,44 +3070,6 @@ def _handle_message(cardinal: "Cardinal", m) -> None:
     text = (m.text or "").strip()
     content_type = m.content_type if hasattr(m, "content_type") else "text"
 
-    if state == "wizard_query":
-        key = (m.chat.id, m.from_user.id)
-        results = _wizard_search(text)
-        if not results:
-            R.pending_tg_states[key] = "wizard_query"
-            tg.bot.send_message(m.chat.id, "❌ Ничего не найдено. Введите другой запрос:")
-            return
-        R.wizard.setdefault(key, {})["results"] = results
-        lines = ["🔎 <b>Результаты поиска:</b>"]
-        for r in results[:20]:
-            lines.append(
-                f"• [{r['service_id']}] {_html_escape(str(r['service_name']))[:40]} — "
-                f"{r.get('price')} USD, x{r.get('in_stock')}")
-        lines.append("\nВыберите сервис кнопкой ниже:")
-        tg.bot.send_message(m.chat.id, "\n".join(lines), parse_mode="HTML",
-                            reply_markup=_wizard_results_kb(results))
-        return
-
-    if state == "wizard_lot":
-        key = (m.chat.id, m.from_user.id)
-        sid = (R.wizard.get(key) or {}).get("service_id")
-        if sid is None:
-            tg.bot.send_message(m.chat.id,
-                                "Сессия мастера истекла. Начните заново: /ns → 🧭 Мастер привязки.")
-            return
-        if not text.isdigit():
-            R.pending_tg_states[key] = "wizard_lot"
-            tg.bot.send_message(m.chat.id, "lot_id должен быть числом. Введите ещё раз:")
-            return
-        mapping = _wizard_save_mapping(text, sid)
-        R.wizard.pop(key, None)
-        tg.bot.send_message(
-            m.chat.id,
-            f"✅ Привязка создана: lot <code>{text}</code> → svc "
-            f"<code>{mapping['service_id']}</code> (type={mapping['type']}, включена).",
-            parse_mode="HTML")
-        return
-
     if state == "secrets":
         # либо JSON, либо k=v строки
         try:
@@ -3472,7 +3172,6 @@ def _cmd_guide(cardinal: "Cardinal", msg) -> None:
         "2. Откройте панель /ns или /nsgifts\n"
         "3. Нажмите «Настройки» → «Загрузить NS-учётку» и пришлите JSON с credentials\n"
         "4. Создайте привязки лотов (mappings) - свяжите lot_id FunPay с service_id NS\n"
-        "   (удобно через 🧭 Мастер привязки: поиск сервиса по названию → выбор → lot_id)\n"
         "5. Включите автовыдачу\n\n"
         "<b>Возможности:</b>\n"
         "• Автовыдача кодов и Steam-пополнений по новым заказам\n"
@@ -3481,16 +3180,12 @@ def _cmd_guide(cardinal: "Cardinal", msg) -> None:
         "• Защита от убытков (блокировка выдачи при цене ниже себестоимости)\n"
         "• Чат-команды: !баланс, !прайс, !статус\n"
         "• Авто-отключение лотов при отсутствии товара на складе\n"
-        "• Стоковые алерты: уведомление при OOS и нулевом балансе NS\n"
-        "• Мастер привязки: поиск по каталогу NS и создание mapping в пару кликов\n"
-        "• Отчёт по марже: /ns_margin [day|week|month|all] (+ csv для экспорта)\n"
         "• Рабочие часы (автовыдача только в указанное время)\n"
         "• Статистика заказов и прибыли\n"
         "• Шаблоны сообщений покупателю\n\n"
         "<b>Команды:</b>\n"
         "/ns, /nsgifts - панель управления\n"
         "/nsgifts_guide - этот гайд\n"
-        "/ns_margin - отчёт по марже (+ csv)\n"
         "/nsgifts_test - тест подключения к NS API"
     )
     try:
@@ -3538,31 +3233,6 @@ def _cmd_test(cardinal: "Cardinal", msg) -> None:
         tg.bot.send_message(msg.chat.id, result, parse_mode="HTML")
     except Exception:
         logger.debug("NS.Gifts: send test result failed", exc_info=True)
-
-
-def _cmd_margin(cardinal: "Cardinal", msg) -> None:
-    """`/ns_margin [day|week|month|all] [csv]` — margin report or CSV export.
-
-    Reads the ``deliveries`` table only (no NS API call)."""
-    tg = _tg(cardinal)
-    if tg is None:
-        return
-    parts = [p.lower() for p in (msg.text or "").split()[1:]]
-    period = next((p for p in ("day", "week", "month", "all") if p in parts), "day")
-    if "csv" in parts:
-        try:
-            data = _margin_csv(period)
-            bio = io.BytesIO(data.encode("utf-8"))
-            bio.name = f"ns_margin_{period}.csv"
-            tg.bot.send_document(msg.chat.id, bio,
-                                 caption=f"NS.Gifts — маржа CSV ({period})")
-        except Exception:
-            logger.debug("NS.Gifts: send margin csv failed", exc_info=True)
-        return
-    try:
-        tg.bot.send_message(msg.chat.id, _margin_report_text(period), parse_mode="HTML")
-    except Exception:
-        logger.debug("NS.Gifts: send margin report failed", exc_info=True)
 
 
 def _register_tg_handlers(cardinal: "Cardinal") -> None:
@@ -3618,17 +3288,6 @@ def _register_tg_handlers(cardinal: "Cardinal") -> None:
     except Exception as e:
         logger.error(f"NS.Gifts: failed to register msg_handler for /nsgifts_test: {e}", exc_info=True)
 
-    # /ns_margin command (margin report + CSV export)
-    try:
-        _h_margin = lambda mm: _cmd_margin(cardinal, mm) if _is_authorized(cardinal, mm.from_user.id) else None
-        R._tg_handler_fns.append(_h_margin)
-        tg.msg_handler(
-            _h_margin,
-            commands=["ns_margin"],
-        )
-    except Exception as e:
-        logger.error(f"NS.Gifts: failed to register msg_handler for /ns_margin: {e}", exc_info=True)
-
     # ответы на наши запросы значений
     try:
         _h_pending = lambda mm: _handle_message(cardinal, mm)
@@ -3647,7 +3306,6 @@ def _register_tg_handlers(cardinal: "Cardinal") -> None:
             ("nsgifts", "Управление NS.Gifts", True),
             ("nsgifts_guide", "NS.Gifts: гайд", True),
             ("nsgifts_test", "NS.Gifts: тест", True),
-            ("ns_margin", "NS.Gifts: отчёт по марже", True),
         ])
     except Exception:
         logger.warning("NS.Gifts: add_telegram_commands failed", exc_info=True)
@@ -3668,6 +3326,20 @@ def init_plugin(cardinal: "Cardinal", *_a, **_kw) -> None:
         _register_tg_handlers(cardinal)
     except Exception as e:
         logger.warning(f"NS.Gifts: early TG handler registration failed (will retry in post_init): {e}")
+
+    # 💛 Донат-баннер (защита реквизитов автора)
+    global _donation_cardinal
+    _donation_cardinal = cardinal
+    try:
+        tg = getattr(cardinal, "telegram", None)
+        if tg:
+            tg.cbq_handler(
+                _donation_on_cb,
+                lambda c: (c.data or "").startswith("nsg_dn:"))
+            _start_donation_reminder(cardinal)
+    except Exception:
+        pass
+
     logger.info(
         f"NS.Gifts plugin v{VERSION} loaded. configured={R.client.configured if R.client else False}, "
         f"mappings={len(R.mappings.get('lots') or {})}"
@@ -3744,6 +3416,48 @@ BIND_TO_SETTINGS_PAGE = _bind_settings_page
 
 
 
+def _donation_on_cb(call) -> None:
+    """Колбэки кнопок баннера: :donate — показать, :donate_broke/:donate_rich — шутка."""
+    try:
+        data = call.data or ""
+        if not data.startswith(DONATION_CALLBACK_PREFIX + ":"):
+            return
+        action = data[len(DONATION_CALLBACK_PREFIX) + 1:]
+        tg = getattr(_donation_cardinal, "telegram", None)
+        if not tg or not getattr(tg, "bot", None):
+            return
+        if action == "donate":
+            try:
+                _send_donation_banner(_donation_cardinal, call.message.chat.id)
+            except Exception:
+                pass
+            try:
+                tg.bot.answer_callback_query(call.id)
+            except Exception:
+                pass
+            return
+        reply = _donation_callback_reply(data)
+        try:
+            tg.bot.answer_callback_query(call.id, reply or "")
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _start_donation_reminder(cardinal) -> None:
+    """Запускает фоновый тред ежедневного напоминания (если включено)."""
+    global _donation_thread
+    if not (DONATION_ENABLED and DONATION_DAILY_ENABLED):
+        return
+    if _donation_thread and _donation_thread.is_alive():
+        return
+    _donation_thread = threading.Thread(
+        target=_donation_reminder_loop, args=(cardinal,), daemon=True,
+        name="donation-reminder")
+    _donation_thread.start()
+
+
 # ----------------------------------------------------------------------------
 # Auto-crash logging: wrap plugin entry points (BIND_TO_* handlers and init)
 # so any unhandled exception is logged with full traceback. Makes silent
@@ -3806,3 +3520,35 @@ try:
 except Exception:
     import logging as _l
     _l.getLogger(__name__).exception("Auto-crash logging install failed")
+
+
+# ------------------------------------------------------------------------------
+# Внутренние данные донат-баннера (закодированы + подпись):
+# если реквизиты подменят на свои, подпись не сойдётся и баннер не отправится.
+# ------------------------------------------------------------------------------
+_DONATION_SIGNATURE = "e7de0933f4b729405e4d55b5df9fc37b7dd39eafee1ff250d3005371cc24338a"
+
+
+def _donation_details() -> dict:
+    """Реквизиты донат-баннера (base64 + подпись — защита от подмены)."""
+    import base64 as _b64
+    import hashlib as _hl
+    _raw = {
+        "card": _b64.b64decode(
+            "NDg3NCAwNzAwIDIzMDAgMDQ3Mg==").decode("utf-8"),
+        "ton": _b64.b64decode(
+            "VVFEYkpKTDd0cGxMU1hOdnVoQ29odDdOTnZfbHJ0U2ZCcmFyR2RIU2hsZFlNTmlK"
+        ).decode("utf-8"),
+        "usdt_ton": _b64.b64decode(
+            "VVFEYkpKTDd0cGxMU1hOdnVoQ29odDdOTnZfbHJ0U2ZCcmFyR2RIU2hsZFlNTmlK"
+        ).decode("utf-8"),
+        "usdt": _b64.b64decode(
+            "VFg2dVpmWkR0N1pHZmJhQThaVDhTRndkUERhTmRwRzlSNw==").decode("utf-8"),
+        "contact": _b64.b64decode(
+            "QHpha3VydWxpZmU=").decode("utf-8"),
+    }
+    _canon = "|".join(
+        _raw[k] for k in ("card", "ton", "usdt_ton", "usdt", "contact"))
+    if _hl.sha256(_canon.encode("utf-8")).hexdigest() != _DONATION_SIGNATURE:
+        return {}
+    return _raw

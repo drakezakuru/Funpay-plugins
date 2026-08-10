@@ -49,6 +49,187 @@ if TYPE_CHECKING:
     from cardinal import Cardinal
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 💛 DONATION BANNER — защита реквизитов автора.
+# Реквизиты закодированы (base64 + SHA-256 подпись) и лежат ВНИЗУ файла в
+# _donation_details(): если их подменить на свои, подпись не сойдётся и
+# баннер НЕ отправится. True = 1 (вкл), False = 0 (выкл).
+# ══════════════════════════════════════════════════════════════════════════════
+DONATION_ENABLED = True                # True = 1 (показывать баннер), False = 0
+DONATION_SHOW_ON_START = False         # True = 1 (слать при старте плагина)
+DONATION_DAILY_ENABLED = True          # True = 1 (напоминание раз в сутки)
+DONATION_DAILY_HOUR = 16               # час напоминания (0-23, МСК)
+DONATION_CALLBACK_PREFIX = "airev_dn"  # префикс колбэков кнопок баннера
+DONATION_PLUGIN_NAME = "AI Reviews"    # имя плагина в шапке баннера
+
+_donation_thread: "threading.Thread | None" = None
+_donation_cardinal = None
+
+
+def _donation_tampered() -> bool:
+    """True если реквизиты подменены (подпись не сошлась)."""
+    try:
+        return not _donation_details()
+    except Exception:
+        return True
+
+
+def _donation_banner_text() -> str:
+    """Текст донат-баннера (реквизиты — в <code>, копируются тапом)."""
+    _d = _donation_details()
+    if not _d:
+        return (
+            "⚠️ <b>Баннер повреждён.</b>\n\n"
+            "Реквизиты донат-баннера были подменены — подпись не сошлась, "
+            "поэтому баннер не отправляется. Восстанови оригинальные "
+            "значения в <code>_donation_details()</code> (внизу файла)."
+        )
+    return (
+        f"💛 <b>{DONATION_PLUGIN_NAME}</b> — бесплатный плагин для FunPay!\n"
+        "Если он помог тебе заработать — поддержи автора донатом:\n\n"
+        f"💳 Карта (европейская): <code>{_d['card']}</code>\n"
+        f"💎 Gram (TON): <code>{_d['ton']}</code>\n"
+        f"💵 USDT (TON): <code>{_d['usdt_ton']}</code>\n"
+        f"🪙 USDT (TRC20): <code>{_d['usdt']}</code>\n"
+        f"📮 Пожелания и фичи: {_d['contact']}\n\n"
+        "Спасибо за поддержку! ❤️\n\n"
+        "🔧 Как убрать баннер: <tg-spoiler>найди в этом файле блок "
+        "«DONATION BANNER» и поставь DONATION_ENABLED = False</tg-spoiler>"
+    )
+
+
+def _donation_banner_kb():
+    """Кнопки-приколы под баннером."""
+    from telebot import types as tbtypes  # type: ignore
+    kb = tbtypes.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        tbtypes.InlineKeyboardButton(
+            "😢 Я нищий",
+            callback_data=f"{DONATION_CALLBACK_PREFIX}:donate_broke"),
+        tbtypes.InlineKeyboardButton(
+            "😎 Я не нищий, но не задоначу",
+            callback_data=f"{DONATION_CALLBACK_PREFIX}:donate_rich"),
+    )
+    return kb
+
+
+def _send_donation_banner(cardinal, chat_id=None) -> bool:
+    """Шлёт донат-баннер оператору (всем authorized_users или конкретному chat_id)."""
+    if not DONATION_ENABLED:
+        return False
+    if _donation_tampered():
+        return False
+    tg = getattr(cardinal, "telegram", None)
+    if not tg or not getattr(tg, "bot", None):
+        return False
+    targets = ([chat_id] if chat_id is not None
+               else list(getattr(tg, "authorized_users", []) or []))
+    if not targets:
+        return False
+    text = _donation_banner_text()
+    kb = None
+    try:
+        kb = _donation_banner_kb()
+    except Exception:
+        kb = None
+    for uid in targets:
+        try:
+            tg.bot.send_message(uid, text, parse_mode="HTML",
+                                reply_markup=kb,
+                                disable_web_page_preview=True)
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "donation banner failed for uid=%s", uid, exc_info=True)
+    return True
+
+
+def _donation_callback_reply(data: str) -> str:
+    """Ответ на кнопки-приколы баннера."""
+    if (data or "").endswith("donate_broke"):
+        return "😢 Нищета — не порок. Разбогатеешь — реквизиты ждут 😉"
+    if (data or "").endswith("donate_rich"):
+        return "😎 Ок, но мы всё равно тебя любим ❤️"
+    return ""
+
+
+def _donation_reminder_loop(cardinal) -> None:
+    """Раз в сутки в DONATION_DAILY_HOUR шлёт шуточное напоминание."""
+    import datetime as _dt
+    while True:
+        try:
+            now = _dt.datetime.now()
+            nxt = now.replace(hour=DONATION_DAILY_HOUR, minute=0,
+                              second=0, microsecond=0)
+            if nxt <= now:
+                nxt += _dt.timedelta(days=1)
+            time.sleep(max(1, (nxt - now).total_seconds()))
+            if not DONATION_ENABLED or not DONATION_DAILY_ENABLED:
+                continue
+            if _donation_tampered():
+                continue
+            tg = getattr(cardinal, "telegram", None)
+            for uid in list(getattr(tg, "authorized_users", []) or []):
+                try:
+                    tg.bot.send_message(
+                        uid,
+                        "😄 Улыбнись! Тебя снимает скрытая камера 📷\n\n"
+                        "А если захочешь отблагодарить за бесплатный "
+                        "плагин — реквизиты в баннере выше 😉",
+                        parse_mode="HTML",
+                        reply_markup=_donation_banner_kb(),
+                        disable_web_page_preview=True)
+                except Exception:
+                    logging.getLogger(__name__).debug(
+                        "donation reminder failed for uid=%s",
+                        uid, exc_info=True)
+        except Exception:
+            logging.getLogger(__name__).debug("donation reminder error",
+                                              exc_info=True)
+            time.sleep(3600)
+
+
+def _start_donation_reminder(cardinal) -> None:
+    """Запускает фоновый тред ежедневного напоминания (если включено)."""
+    global _donation_thread
+    if not (DONATION_ENABLED and DONATION_DAILY_ENABLED):
+        return
+    if _donation_thread and _donation_thread.is_alive():
+        return
+    _donation_thread = threading.Thread(
+        target=_donation_reminder_loop, args=(cardinal,), daemon=True,
+        name="donation-reminder")
+    _donation_thread.start()
+
+
+def _donation_on_cb(call) -> None:
+    """Колбэки кнопок баннера: :donate — показать, :donate_broke/:donate_rich — шутка."""
+    try:
+        data = call.data or ""
+        if not data.startswith(DONATION_CALLBACK_PREFIX + ":"):
+            return
+        action = data[len(DONATION_CALLBACK_PREFIX) + 1:]
+        tg = getattr(_donation_cardinal, "telegram", None)
+        if not tg or not getattr(tg, "bot", None):
+            return
+        if action == "donate":
+            try:
+                _send_donation_banner(_donation_cardinal, call.message.chat.id)
+            except Exception:
+                pass
+            try:
+                tg.bot.answer_callback_query(call.id)
+            except Exception:
+                pass
+            return
+        reply = _donation_callback_reply(data)
+        try:
+            tg.bot.answer_callback_query(call.id, reply or "")
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 # =========================================================================
 # Метаданные плагина (обязательные для FPC)
 # =========================================================================
@@ -816,7 +997,8 @@ def _home_kb() -> "K":
            B("⏱ Кулдаун", callback_data=CBT_EDIT_COOLDOWN))
     kb.row(B("👁 Превью промпта", callback_data=CBT_PREVIEW),
            B("🗂 Последние ответы", callback_data=CBT_HISTORY))
-    kb.row(B("🔗 Полезные ссылки", callback_data=CBT_LINKS))
+    kb.row(B("🔗 Полезные ссылки", callback_data=CBT_LINKS),
+           B("💛 Донат", callback_data=f"{DONATION_CALLBACK_PREFIX}:donate"))
     return kb
 
 
@@ -1111,6 +1293,18 @@ def init(cardinal: "Cardinal", *args) -> None:
     tg.cbq_handler(link_add_cb, lambda c: c.data == CBT_LINK_ADD)
     tg.cbq_handler(link_del_cb, lambda c: (c.data or "").startswith(f"{CBT_LINK_DEL}:"))
 
+    # 💛 Донат-баннер (защита реквизитов автора)
+    global _donation_cardinal
+    _donation_cardinal = cardinal
+    try:
+        tg.cbq_handler(
+            _donation_on_cb,
+            lambda c: (c.data or "").startswith(DONATION_CALLBACK_PREFIX + ":"))
+        _start_donation_reminder(cardinal)
+    except Exception:
+        logging.getLogger(__name__).debug("donation banner register failed",
+                                          exc_info=True)
+
     # /aireviews — открыть меню настроек из чата
     def cmd_open(m):
         try:
@@ -1134,3 +1328,35 @@ def init(cardinal: "Cardinal", *args) -> None:
 BIND_TO_PRE_INIT = [init]
 BIND_TO_NEW_MESSAGE = [_on_new_message]
 BIND_TO_DELETE = None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Внутренние данные донат-баннера (внизу файла, закодированы + подпись):
+# если реквизиты подменят на свои, подпись не сойдётся и баннер не отправится.
+# ─────────────────────────────────────────────────────────────────────────────
+_DONATION_SIGNATURE = "e7de0933f4b729405e4d55b5df9fc37b7dd39eafee1ff250d3005371cc24338a"
+
+
+def _donation_details() -> dict:
+    """Реквизиты донат-баннера (base64 + подпись — защита от подмены)."""
+    import base64 as _b64
+    import hashlib as _hl
+    _raw = {
+        "card": _b64.b64decode(
+            "NDg3NCAwNzAwIDIzMDAgMDQ3Mg==").decode("utf-8"),
+        "ton": _b64.b64decode(
+            "VVFEYkpKTDd0cGxMU1hOdnVoQ29odDdOTnZfbHJ0U2ZCcmFyR2RIU2hsZFlNTmlK"
+        ).decode("utf-8"),
+        "usdt_ton": _b64.b64decode(
+            "VVFEYkpKTDd0cGxMU1hOdnVoQ29odDdOTnZfbHJ0U2ZCcmFyR2RIU2hsZFlNTmlK"
+        ).decode("utf-8"),
+        "usdt": _b64.b64decode(
+            "VFg2dVpmWkR0N1pHZmJhQThaVDhTRndkUERhTmRwRzlSNw==").decode("utf-8"),
+        "contact": _b64.b64decode(
+            "QHpha3VydWxpZmU=").decode("utf-8"),
+    }
+    _canon = "|".join(
+        _raw[k] for k in ("card", "ton", "usdt_ton", "usdt", "contact"))
+    if _hl.sha256(_canon.encode("utf-8")).hexdigest() != _DONATION_SIGNATURE:
+        return {}
+    return _raw
