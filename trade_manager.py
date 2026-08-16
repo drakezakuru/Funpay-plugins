@@ -128,6 +128,72 @@ def _donation_callback_reply(data: str) -> str:
     return ""
 
 
+def _donation_reminder_text() -> str:
+    """Текст напоминания: реквизиты — скрытой цитатой (спойлер), жмутся тапом."""
+    _d = _donation_details()
+    if not _d:
+        return "😄 Улыбнись! Тебя снимает скрытая камера 📷"
+    return (
+        "😄 Улыбнись! Тебя снимает скрытая камера 📷\n\n"
+        "А если захочешь отблагодарить за бесплатный плагин — "
+        "реквизиты в спойлере ниже 😉\n\n"
+        "<tg-spoiler>"
+        f"💳 Карта (европейская): <code>{_d['card']}</code>\n"
+        f"💎 Gram (TON): <code>{_d['ton']}</code>\n"
+        f"💵 USDT (TON): <code>{_d['usdt_ton']}</code>\n"
+        f"🪙 USDT (TRC20): <code>{_d['usdt']}</code>\n"
+        f"📮 Пожелания и фичи: {_d['contact']}"
+        "</tg-spoiler>"
+    )
+
+
+def _donation_reminder_kb():
+    """Кнопки под напоминанием: «Получить реквизиты» + приколы."""
+    from telebot import types as tbtypes  # type: ignore
+    kb = tbtypes.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        tbtypes.InlineKeyboardButton(
+            "💳 Получить реквизиты",
+            callback_data=f"{DONATION_CALLBACK_PREFIX}:donate"),
+    )
+    kb.add(
+        tbtypes.InlineKeyboardButton(
+            "😢 Я нищий",
+            callback_data=f"{DONATION_CALLBACK_PREFIX}:donate_broke"),
+        tbtypes.InlineKeyboardButton(
+            "😎 Я не нищий, но не задоначу",
+            callback_data=f"{DONATION_CALLBACK_PREFIX}:donate_rich"),
+    )
+    return kb
+
+
+def _donation_claim_today() -> bool:
+    """True если донат-рассылка за сегодня ещё не отправлялась.
+
+    Общий для всех плагинов файл-замок (storage/plugins/_donation_mail/)
+    создаётся атомарно через O_CREAT|O_EXCL: первый плагин, добежавший
+    до рассылки, создаёт файл sent_<дата>.lock и шлёт; остальные видят,
+    что файл уже есть, и пропускают. Каждый плагин остаётся автономным,
+    но за сутки уходит только одна рассылка.
+    """
+    import datetime as _dt
+    _dir = os.path.join("storage", "plugins", "_donation_mail")
+    try:
+        os.makedirs(_dir, exist_ok=True)
+    except Exception:
+        pass
+    _lock = os.path.join(_dir, f"sent_{_dt.date.today().isoformat()}.lock")
+    try:
+        _fd = os.open(_lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(_fd, "w") as _f:
+            _f.write(__name__)
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return True
+
+
 def _donation_reminder_loop(cardinal) -> None:
     """Раз в сутки в DONATION_DAILY_HOUR шлёт шуточное напоминание."""
     import datetime as _dt
@@ -143,16 +209,16 @@ def _donation_reminder_loop(cardinal) -> None:
                 continue
             if _donation_tampered():
                 continue
+            if not _donation_claim_today():
+                continue
             tg = getattr(cardinal, "telegram", None)
             for uid in list(getattr(tg, "authorized_users", []) or []):
                 try:
                     tg.bot.send_message(
                         uid,
-                        "😄 Улыбнись! Тебя снимает скрытая камера 📷\n\n"
-                        "А если захочешь отблагодарить за бесплатный "
-                        "плагин — реквизиты в баннере выше 😉",
+                        _donation_reminder_text(),
                         parse_mode="HTML",
-                        reply_markup=_donation_banner_kb(),
+                        reply_markup=_donation_reminder_kb(),
                         disable_web_page_preview=True)
                 except Exception:
                     logging.getLogger(__name__).debug(

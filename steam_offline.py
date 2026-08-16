@@ -91,11 +91,11 @@ def _donation_banner_text() -> str:
     return (
         f"💛 <b>{DONATION_PLUGIN_NAME}</b> — бесплатный плагин для FunPay!\n"
         "Если он помог тебе заработать — поддержи автора донатом:\n\n"
-        f"💳 Карта (европейская): <code>{{_d['card']}}</code>\n"
-        f"💎 Gram (TON): <code>{{_d['ton']}}</code>\n"
-        f"💵 USDT (TON): <code>{{_d['usdt_ton']}}</code>\n"
-        f"🪙 USDT (TRC20): <code>{{_d['usdt']}}</code>\n"
-        f"📮 Пожелания и фичи: {{_d['contact']}}\n\n"
+        f"💳 Карта (европейская): <code>{_d['card']}</code>\n"
+        f"💎 Gram (TON): <code>{_d['ton']}</code>\n"
+        f"💵 USDT (TON): <code>{_d['usdt_ton']}</code>\n"
+        f"🪙 USDT (TRC20): <code>{_d['usdt']}</code>\n"
+        f"📮 Пожелания и фичи: {_d['contact']}\n\n"
         "Спасибо за поддержку! ❤️\n\n"
         "🔧 Как убрать баннер: <tg-spoiler>найди в этом файле блок "
         "«DONATION BANNER» и поставь DONATION_ENABLED = False</tg-spoiler>"
@@ -156,17 +156,106 @@ def _donation_callback_reply(data: str) -> str:
     return ""
 
 
+def _donation_reminder_text() -> str:
+    """Текст напоминания: реквизиты — скрытой цитатой (спойлер), жмутся тапом."""
+    _d = _donation_details()
+    if not _d:
+        return "😄 Улыбнись! Тебя снимает скрытая камера 📷"
+    return (
+        "😄 Улыбнись! Тебя снимает скрытая камера 📷\n\n"
+        "А если захочешь отблагодарить за бесплатный плагин — "
+        "реквизиты в спойлере ниже 😉\n\n"
+        "<tg-spoiler>"
+        f"💳 Карта (европейская): <code>{_d['card']}</code>\n"
+        f"💎 Gram (TON): <code>{_d['ton']}</code>\n"
+        f"💵 USDT (TON): <code>{_d['usdt_ton']}</code>\n"
+        f"🪙 USDT (TRC20): <code>{_d['usdt']}</code>\n"
+        f"📮 Пожелания и фичи: {_d['contact']}"
+        "</tg-spoiler>"
+    )
+
+
+def _donation_reminder_kb():
+    """Кнопки под напоминанием: «Получить реквизиты» + приколы."""
+    from telebot import types as tbtypes  # type: ignore
+    kb = tbtypes.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        tbtypes.InlineKeyboardButton(
+            "💳 Получить реквизиты",
+            callback_data=f"{DONATION_CALLBACK_PREFIX}:donate"),
+    )
+    kb.add(
+        tbtypes.InlineKeyboardButton(
+            "😢 Я нищий",
+            callback_data=f"{DONATION_CALLBACK_PREFIX}:donate_broke"),
+        tbtypes.InlineKeyboardButton(
+            "😎 Я не нищий, но не задоначу",
+            callback_data=f"{DONATION_CALLBACK_PREFIX}:donate_rich"),
+    )
+    return kb
+
+
+def _donation_claim_today() -> bool:
+    """True если донат-рассылка за сегодня ещё не отправлялась.
+
+    Общий для всех плагинов файл-замок (storage/plugins/_donation_mail/)
+    создаётся атомарно через O_CREAT|O_EXCL: первый плагин, добежавший
+    до рассылки, создаёт файл sent_<дата>.lock и шлёт; остальные видят,
+    что файл уже есть, и пропускают. Каждый плагин остаётся автономным,
+    но за сутки уходит только одна рассылка.
+    """
+    import datetime as _dt
+    _dir = os.path.join("storage", "plugins", "_donation_mail")
+    try:
+        os.makedirs(_dir, exist_ok=True)
+    except Exception:
+        pass
+    _lock = os.path.join(_dir, f"sent_{_dt.date.today().isoformat()}.lock")
+    try:
+        _fd = os.open(_lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(_fd, "w") as _f:
+            _f.write(__name__)
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return True
+
+
 def _donation_reminder_loop(cardinal) -> None:
     """Раз в сутки в DONATION_DAILY_HOUR шлёт шуточное напоминание."""
     import datetime as _dt
     while True:
         try:
             now = _dt.datetime.now()
-            if now.hour == DONATION_DAILY_HOUR and now.minute == 0:
-                _send_donation_banner(cardinal)
+            nxt = now.replace(hour=DONATION_DAILY_HOUR, minute=0,
+                              second=0, microsecond=0)
+            if nxt <= now:
+                nxt += _dt.timedelta(days=1)
+            time.sleep(max(1, (nxt - now).total_seconds()))
+            if not DONATION_ENABLED or not DONATION_DAILY_ENABLED:
+                continue
+            if _donation_tampered():
+                continue
+            if not _donation_claim_today():
+                continue
+            tg = getattr(cardinal, "telegram", None)
+            for uid in list(getattr(tg, "authorized_users", []) or []):
+                try:
+                    tg.bot.send_message(
+                        uid,
+                        _donation_reminder_text(),
+                        parse_mode="HTML",
+                        reply_markup=_donation_reminder_kb(),
+                        disable_web_page_preview=True)
+                except Exception:
+                    logging.getLogger(__name__).debug(
+                        "donation reminder failed for uid=%s",
+                        uid, exc_info=True)
         except Exception:
-            pass
-        time.sleep(60)
+            logging.getLogger(__name__).debug("donation reminder error",
+                                              exc_info=True)
+            time.sleep(3600)
 
 
 # Соседний плагин — обязательная зависимость (Steam-клиент
@@ -951,6 +1040,13 @@ def _denuvo_increment(alias: str) -> tuple[int, int, bool]:
 
 
 # ── Storage helpers ──────────────────────────────────────────────────────────
+# Лок для чтения/записи JSON: _save_json шлёт во временный файл с общим
+# именем (path + ".tmp") и переименовывает его через os.replace. Без лока
+# два потока (lot-activation цикл, обработчики заказов, _log_event) могут
+# перезаписать один и тот же tmp и уронить os.replace с FileNotFoundError.
+_io_lock = threading.RLock()
+
+
 def _ensure_storage() -> None:
     os.makedirs(STORAGE_DIR, exist_ok=True)
 
@@ -960,7 +1056,7 @@ def _load_json(path: str, default: Any) -> Any:
     if not os.path.exists(path):
         return default
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with _io_lock, open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         LOGGER.warning("steam_offline: не удалось прочитать %s", path,
@@ -971,9 +1067,10 @@ def _load_json(path: str, default: Any) -> Any:
 def _save_json(path: str, data: Any) -> None:
     _ensure_storage()
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    with _io_lock:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
 
 
 def _now() -> int:
@@ -2465,6 +2562,17 @@ def _install_raise_skip_so(cardinal: "Cardinal") -> None:
             "lot_activation_common")
 
 
+def _account_not_ready(exc: Exception) -> bool:
+    """True если FunPay-аккаунт ещё не инициализирован (Account.get()
+    ещё не вызывался) — например, цикл авто-деактивации лотов стартует
+    раньше, чем Cardinal успевает получить данные аккаунта."""
+    if type(exc).__name__ == "AccountNotInitiatedError":
+        return True
+    msg = str(exc)
+    return ("Account.get()" in msg) or ("аккаунт" in msg.lower()
+                                         and "инициал" in msg.lower())
+
+
 def _update_lot_activation_so(cardinal: "Cardinal", *, force: bool = False,
                                verbose: bool = False) -> dict[str, Any]:
     """Деактивирует лоты без свободных аккаунтов, активирует обратно.
@@ -2553,6 +2661,14 @@ def _update_lot_activation_so(cardinal: "Cardinal", *, force: bool = False,
                     "steam_offline: лот %s деактивирован (нет свободных)",
                     key)
         except Exception as e:
+            if _account_not_ready(e):
+                # Аккаунт FunPay ещё не инициализирован (стартуем раньше,
+                # чем Cardinal успевает сделать Account.get()). Не сыпем
+                # ошибками — пропускаем тик, повторим через 60 сек.
+                counters["stopped_reason"] = (
+                    "аккаунт FunPay ещё не инициализирован")
+                counters["skipped"] += 1
+                break
             counters["failed"] += 1
             counters["failures"].append({
                 "lot": str(key),
@@ -4351,6 +4467,10 @@ def _register_tg_commands(cardinal: "Cardinal") -> None:
         kb.add(
             tbtypes.InlineKeyboardButton(
                 "🔧 Инструменты", callback_data="so:tools"),
+        )
+        kb.add(
+            tbtypes.InlineKeyboardButton(
+                "💛 Донат", callback_data=f"{DONATION_CALLBACK_PREFIX}:donate"),
         )
         kb.add(
             tbtypes.InlineKeyboardButton(

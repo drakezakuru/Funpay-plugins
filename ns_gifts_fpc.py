@@ -81,11 +81,11 @@ def _donation_banner_text() -> str:
     return (
         f"💛 <b>{DONATION_PLUGIN_NAME}</b> — бесплатный плагин для FunPay!\n"
         "Если он помог тебе заработать — поддержи автора донатом:\n\n"
-        f"💳 Карта (европейская): <code>{{_d['card']}}</code>\n"
-        f"💎 Gram (TON): <code>{{_d['ton']}}</code>\n"
-        f"💵 USDT (TON): <code>{{_d['usdt_ton']}}</code>\n"
-        f"🪙 USDT (TRC20): <code>{{_d['usdt']}}</code>\n"
-        f"📮 Пожелания и фичи: {{_d['contact']}}\n\n"
+        f"💳 Карта (европейская): <code>{_d['card']}</code>\n"
+        f"💎 Gram (TON): <code>{_d['ton']}</code>\n"
+        f"💵 USDT (TON): <code>{_d['usdt_ton']}</code>\n"
+        f"🪙 USDT (TRC20): <code>{_d['usdt']}</code>\n"
+        f"📮 Пожелания и фичи: {_d['contact']}\n\n"
         "Спасибо за поддержку! ❤️\n\n"
         "🔧 Как убрать баннер: <tg-spoiler>найди в этом файле блок "
         "«DONATION BANNER» и поставь DONATION_ENABLED = False</tg-spoiler>"
@@ -146,6 +146,33 @@ def _donation_callback_reply(data: str) -> str:
     return ""
 
 
+def _donation_claim_today() -> bool:
+    """True если донат-рассылка за сегодня ещё не отправлялась.
+
+    Общий для всех плагинов файл-замок (storage/plugins/_donation_mail/)
+    создаётся атомарно через O_CREAT|O_EXCL: первый плагин, добежавший
+    до рассылки, создаёт файл sent_<дата>.lock и шлёт; остальные видят,
+    что файл уже есть, и пропускают. Каждый плагин остаётся автономным,
+    но за сутки уходит только одна рассылка.
+    """
+    import datetime as _dt
+    _dir = os.path.join("storage", "plugins", "_donation_mail")
+    try:
+        os.makedirs(_dir, exist_ok=True)
+    except Exception:
+        pass
+    _lock = os.path.join(_dir, f"sent_{_dt.date.today().isoformat()}.lock")
+    try:
+        _fd = os.open(_lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(_fd, "w") as _f:
+            _f.write(__name__)
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return True
+
+
 def _donation_reminder_loop(cardinal) -> None:
     """Раз в сутки в DONATION_DAILY_HOUR шлёт шуточное напоминание."""
     import datetime as _dt
@@ -153,7 +180,8 @@ def _donation_reminder_loop(cardinal) -> None:
         try:
             now = _dt.datetime.now()
             if now.hour == DONATION_DAILY_HOUR and now.minute == 0:
-                _send_donation_banner(cardinal)
+                if _donation_claim_today():
+                    _send_donation_banner(cardinal)
         except Exception:
             pass
         time.sleep(60)
