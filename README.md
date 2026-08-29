@@ -4,3 +4,4 @@ any questions @drakelovc or @drakezakuru tg
 
 
 maybe problems with change password in steam rent without proxy 
+good plugins for good boys (https://github.com/drakezakuru/Funpay-plugins) если собираетесь сливать в другие каналы не вырезайте хотя бы автора плагинов не будьте bad boys (https://t.me/cloudecode/63)
