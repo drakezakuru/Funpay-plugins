@@ -8,6 +8,7 @@ import re
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -418,6 +419,20 @@ LANG: dict[str, dict[str, str]] = {
         "enter_promo_code": "Введите промо-код (напр. SAVE10):",
         "enter_promo_desc": "Промо-код: <b>{code}</b>\n\nТеперь введите описание промо:",
         "enter_upsell_prompt": "Текущий промпт допродажи:\n<i>{current}</i>\n\nВведите новый текст промпта допродажи:",
+        # Product catalog
+        "product_catalog": "📦 Каталог товаров",
+        "product_catalog_mgmt": "Управление каталогом товаров\n\nЗдесь вы можете добавить товары которые AI будет предлагать покупателям.",
+        "product_added": "Товар <b>{name}</b> добавлен!",
+        "product_removed": "Товар <b>{name}</b> удалён.",
+        "enter_product_name": "Введите название товара:",
+        "enter_product_price": "Товар: <b>{name}</b>\n\nВведите цену (число или текст, напр. '100 руб.' или 'от 500'): ",
+        "enter_product_desc": "Товар: <b>{name}</b>, Цена: <b>{price}</b>\n\nВведите описание товара (кратко о чём товар, условия, особенности): ",
+        "product_empty": "Каталог пуст. Добавьте товары чтобы AI мог отвечать покупателям.",
+        "add_product": "➕ Добавить товар",
+        "sync_products": "🔄 Загрузить с FunPay",
+        "syncing_products": "Загружаю товары с FunPay...",
+        "sync_products_done": "Загружено {n} лотов с FunPay",
+        "sync_products_empty": "Cardinal не вернул лотов. Проверьте подключение.",
         "value_empty": "Значение не может быть пустым.",
         "invalid_number": "Введите корректное число.",
         "unknown_field": "Неизвестное поле.",
@@ -532,10 +547,38 @@ LANG: dict[str, dict[str, str]] = {
         "preset_custom": "Свой промпт",
         "select_provider": "Выберите провайдера AI:",
         "select_preset": "Выберите пресет системного промпта:",
+        "provider_changed_to": "Провайдер изменён на",
+        "provider_set_model_hint": "Не забудьте выбрать модель для этого провайдера (кнопка 🤖 Модель — там есть пресеты).",
+        "provider_examples": "Примеры",
+        "unknown_provider": "Неизвестный провайдер",
+        # Model presets
+        "select_model": "Выберите модель:",
+        "model_manual": "Ввести вручную",
+        "model_testing": "Модель {model} сохранена. Тестирую подключение...",
+        # Custom providers
+        "cprovider_add": "Добавить провайдера",
+        "cprovider_manage": "Управление провайдерами",
+        "cprovider_delete_hint": "Нажмите на провайдера для удаления. ⭐ — активный.",
+        "cprovider_note": "Кастомных провайдеров: {count}",
+        "no_custom_providers": "Кастомных провайдеров пока нет. Нажмите ➕ чтобы добавить свой (любой OpenAI-совместимый API).",
+        "cprovider_removed": "Провайдер {name} удалён",
+        "enter_cprovider_name": "Новый провайдер — шаг 1/4.\n\nНазвание (латиница/цифры/_, 2-20 символов):",
+        "invalid_cprovider_name": "Название должно содержать только латиницу, цифры и _ (2-20 символов).",
+        "cprovider_reserved": "Это название занято встроенным провайдером.",
+        "cprovider_exists": "Провайдер с таким названием уже существует.",
+        "enter_cprovider_url": "Шаг 2/4.\n\nBase URL провайдера (например https://api.together.xyz/v1):",
+        "invalid_cprovider_url": "URL должен начинаться с http:// или https://",
+        "enter_cprovider_models": "Шаг 3/4.\n\nМодели через запятую (сохранятся как пресеты в меню модели). Отправьте '-', чтобы пропустить:",
+        "enter_cprovider_key": "Шаг 4/4.\n\nAPI ключ этого провайдера (или '-', чтобы использовать общий ключ):",
+        "cprovider_added": "Провайдер {name} добавлен!",
+        "cprovider_models_count": "Моделей сохранено: {count}",
+        "cprovider_make_active": "Сделать активным провайдером",
         # Setting descriptions
         "desc_plugin_enabled": "Включает/выключает AI-ответы на сообщения покупателей",
         "desc_auto_delivery_info": "AI сообщает покупателю об автовыдаче после оплаты",
         "desc_forward_questions": "Пересылать нестандартные вопросы продавцу в Telegram",
+        "desc_notify_standard": "Уведомлять продавца когда AI ответил покупателю сам",
+        "notify_standard_label": "Уведом при ответе AI",
         "desc_list_products": "Показывать список товаров когда покупатель уточняет",
         "desc_anti_spam": "Ограничение количества сообщений от покупателя в минуту",
         "desc_working_hours": "AI отвечает только в заданные часы, вне часов - отправляет offline-сообщение",
@@ -567,6 +610,7 @@ LANG: dict[str, dict[str, str]] = {
         "budget_limit_label": "Дневной лимит",
         "budget_unit_label": "Единица бюджета",
         "budget_alert_label": "Порог оповещения",
+        "test_model": "🧪 Тест модели",
         "topic_filter": "Фильтр тем",
         "manage_topic_filter": "Запрещённые темы",
         "topic_canned_label": "Ответ-заглушка",
@@ -581,6 +625,9 @@ LANG: dict[str, dict[str, str]] = {
         "manage_faq": "Управление FAQ",
         "add_faq": "Добавить FAQ",
         "qa_log": "Лог Q&A",
+        "view_logs": "📋 Логи",
+        "logs_title": "Последние логи плагина:",
+        "logs_empty": "Логи пусты.",
         "enter_memory_ttl": "Введите TTL памяти в секундах (целое > 0):",
         "enter_fallback_models": "Введите резервные модели через запятую (пусто — очистить):",
         "enter_budget_limit": "Введите дневной лимит (целое > 0):",
@@ -659,6 +706,20 @@ LANG: dict[str, dict[str, str]] = {
         "enter_promo_code": "Enter the promo code (e.g. SAVE10):",
         "enter_promo_desc": "Promo code: <b>{code}</b>\n\nNow enter a description for this promo:",
         "enter_upsell_prompt": "Current upsell prompt:\n<i>{current}</i>\n\nEnter the new upsell prompt addon text:",
+        # Product catalog
+        "product_catalog": "📦 Product Catalog",
+        "product_catalog_mgmt": "Product Catalog Management\n\nAdd products that the AI will offer to buyers.",
+        "product_added": "Product <b>{name}</b> added!",
+        "product_removed": "Product <b>{name}</b> removed.",
+        "enter_product_name": "Enter the product name:",
+        "enter_product_price": "Product: <b>{name}</b>\n\nEnter the price (number or text, e.g. '100 rub.' or 'from 500'): ",
+        "enter_product_desc": "Product: <b>{name}</b>, Price: <b>{price}</b>\n\nEnter a brief product description: ",
+        "product_empty": "Catalog is empty. Add products so the AI can answer buyers.",
+        "add_product": "➕ Add product",
+        "sync_products": "🔄 Sync from FunPay",
+        "syncing_products": "Loading products from FunPay...",
+        "sync_products_done": "Loaded {n} lots from FunPay",
+        "sync_products_empty": "Cardinal returned no lots. Check connection.",
         "value_empty": "Value cannot be empty.",
         "invalid_number": "Please enter a valid number.",
         "unknown_field": "Unknown field.",
@@ -773,10 +834,38 @@ LANG: dict[str, dict[str, str]] = {
         "preset_custom": "Custom prompt",
         "select_provider": "Select AI provider:",
         "select_preset": "Select system prompt preset:",
+        "provider_changed_to": "Provider changed to",
+        "provider_set_model_hint": "Don't forget to pick a model for this provider (🤖 Model button has presets).",
+        "provider_examples": "Examples",
+        "unknown_provider": "Unknown provider",
+        # Model presets
+        "select_model": "Select a model:",
+        "model_manual": "Enter manually",
+        "model_testing": "Model {model} saved. Testing connection...",
+        # Custom providers
+        "cprovider_add": "Add provider",
+        "cprovider_manage": "Manage providers",
+        "cprovider_delete_hint": "Tap a provider to delete it. ⭐ = active.",
+        "cprovider_note": "Custom providers: {count}",
+        "no_custom_providers": "No custom providers yet. Tap ➕ to add your own (any OpenAI-compatible API).",
+        "cprovider_removed": "Provider {name} removed",
+        "enter_cprovider_name": "New provider — step 1/4.\n\nName (latin/digits/_, 2-20 chars):",
+        "invalid_cprovider_name": "Name must contain only latin letters, digits and _ (2-20 chars).",
+        "cprovider_reserved": "This name is reserved by a built-in provider.",
+        "cprovider_exists": "A provider with this name already exists.",
+        "enter_cprovider_url": "Step 2/4.\n\nProvider base URL (e.g. https://api.together.xyz/v1):",
+        "invalid_cprovider_url": "URL must start with http:// or https://",
+        "enter_cprovider_models": "Step 3/4.\n\nModels, comma-separated (saved as presets in the model menu). Send '-' to skip:",
+        "enter_cprovider_key": "Step 4/4.\n\nAPI key for this provider (or '-' to use the general key):",
+        "cprovider_added": "Provider {name} added!",
+        "cprovider_models_count": "Models saved: {count}",
+        "cprovider_make_active": "Make active provider",
         # Setting descriptions
         "desc_plugin_enabled": "Enables/disables AI responses to buyer messages",
         "desc_auto_delivery_info": "AI informs buyer about auto-delivery after payment",
         "desc_forward_questions": "Forward non-standard questions to seller in Telegram",
+        "desc_notify_standard": "Notify seller when AI answers directly",
+        "notify_standard_label": "Notify on AI reply",
         "desc_list_products": "Show product list when buyer asks for clarification",
         "desc_anti_spam": "Limit number of messages per buyer per minute",
         "desc_working_hours": "AI responds only during set hours, sends offline message otherwise",
@@ -808,6 +897,7 @@ LANG: dict[str, dict[str, str]] = {
         "budget_limit_label": "Daily limit",
         "budget_unit_label": "Budget unit",
         "budget_alert_label": "Alert threshold",
+        "test_model": "🧪 Test model",
         "topic_filter": "Topic filter",
         "manage_topic_filter": "Denied topics",
         "topic_canned_label": "Canned reply",
@@ -822,6 +912,9 @@ LANG: dict[str, dict[str, str]] = {
         "manage_faq": "Manage FAQ",
         "add_faq": "Add FAQ",
         "qa_log": "Q&A log",
+        "view_logs": "📋 Logs",
+        "logs_title": "Recent plugin logs:",
+        "logs_empty": "No logs yet.",
         "enter_memory_ttl": "Enter memory TTL in seconds (integer > 0):",
         "enter_fallback_models": "Enter fallback models, comma-separated (empty to clear):",
         "enter_budget_limit": "Enter daily limit (integer > 0):",
@@ -900,6 +993,7 @@ class AIChatCBT:
     TOGGLE_ENABLED = "aichat:toggle:enabled"
     TOGGLE_NOTIFY_AD = "aichat:toggle:notify_ad"
     TOGGLE_FORWARD = "aichat:toggle:forward"
+    TOGGLE_NOTIFY_STANDARD = "aichat:toggle:notify_standard"
     TOGGLE_LIST_PRODUCTS = "aichat:toggle:list_products"
     EDIT_MODEL = "aichat:edit:model"
     EDIT_SYSTEM_PROMPT = "aichat:edit:system_prompt"
@@ -927,6 +1021,11 @@ class AIChatCBT:
     MANAGE_TEMPLATES = "aichat:manage:templates"
     ADD_TEMPLATE = "aichat:add:template"
     REMOVE_TEMPLATE_PREFIX = "aichat:tpl:rm:"
+    # Product Catalog
+    MANAGE_PRODUCTS = "aichat:manage:products"
+    ADD_PRODUCT = "aichat:add:product"
+    REMOVE_PRODUCT_PREFIX = "aichat:product:rm:"
+    SYNC_PRODUCTS = "aichat:sync:products"
     # Stop-words
     TOGGLE_STOPWORDS = "aichat:toggle:stopwords"
     MANAGE_STOPWORDS = "aichat:manage:stopwords"
@@ -952,6 +1051,12 @@ class AIChatCBT:
     SELECT_PROVIDER = "aichat:sel:provider"
     SELECT_PRESET = "aichat:sel:preset"
     DOWNLOAD_PROMPT = "aichat:download:prompt"
+    # Model presets & custom providers
+    SELECT_MODEL_PRESET = "aichat:sel:model"
+    MODEL_MANUAL = "aichat:model:manual"
+    MANAGE_CPROVIDERS = "aichat:cprov:manage"
+    ADD_CPROVIDER = "aichat:cprov:add"
+    REMOVE_CPROVIDER_PREFIX = "aichat:cprov:rm:"
     # Preset management
     MANAGE_PRESETS = "aichat:presets:manage"
     CREATE_PRESET = "aichat:presets:create"
@@ -976,6 +1081,7 @@ class AIChatCBT:
     EDIT_BUDGET_LIMIT = "aichat:edit:budget_limit"
     EDIT_BUDGET_UNIT = "aichat:edit:budget_unit"
     EDIT_BUDGET_ALERT = "aichat:edit:budget_alert"
+    TEST_MODEL = "aichat:test_model"
     # Topic filter (Moderation)
     TOGGLE_TOPIC_FILTER = "aichat:toggle:topic_filter"
     MANAGE_TOPIC_FILTER = "aichat:manage:topic_filter"
@@ -998,6 +1104,7 @@ class AIChatCBT:
     REMOVE_FAQ_PREFIX = "aichat:faq:rm:"
     # Q&A logging (Stats)
     TOGGLE_QA_LOG = "aichat:toggle:qa_log"
+    VIEW_LOGS = "aichat:view:logs"
 
 
 # State tracking for text input from users
@@ -1042,6 +1149,41 @@ def _has_pending_input(user_id: int) -> bool:
 
 
 logger = logging.getLogger("FPC.ai_chat_plugin")
+LOGGER_PREFIX = "[AICHAT]"
+
+# --- In-memory log buffer for Telegram log viewer ---
+_log_buffer: list[str] = []
+_log_buffer_lock = threading.Lock()
+_LOG_BUFFER_MAX = 100
+
+
+class _TelegramLogHandler(logging.Handler):
+    """Captures [AICHAT] log lines into an in-memory ring buffer."""
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            with _log_buffer_lock:
+                _log_buffer.append(msg)
+                if len(_log_buffer) > _LOG_BUFFER_MAX:
+                    del _log_buffer[: len(_log_buffer) - _LOG_BUFFER_MAX]
+        except Exception:
+            pass
+
+
+try:
+    _tg_handler = _TelegramLogHandler()
+    _tg_handler.setFormatter(logging.Formatter(
+        "[%(asctime)s] %(message)s", datefmt="%H:%M:%S"))
+    logger.addHandler(_tg_handler)
+except Exception:
+    pass
+
+
+def _get_log_entries(n: int = 30) -> list[str]:
+    """Return the last *n* log lines from the buffer."""
+    with _log_buffer_lock:
+        return list(_log_buffer[-n:])
+
 
 CONFIG_PATH = "configs/ai_chat_plugin.cfg"
 STATS_PATH = "configs/ai_chat_plugin_stats.json"
@@ -1053,6 +1195,7 @@ FAQ_PATH = "configs/ai_chat_plugin_faq.json"
 QA_LOG_PATH = "configs/ai_chat_plugin_qa_log.json"
 BUDGET_PATH = "configs/ai_chat_plugin_budget.json"
 PAUSE_PATH = "configs/ai_chat_plugin_pause.json"
+PROVIDERS_PATH = "configs/ai_chat_plugin_providers.json"
 QA_LOG_MAX_RECORDS = 500
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -1066,22 +1209,133 @@ PROVIDERS: dict[str, str] = {
     "anthropic": "https://api.anthropic.com/v1/messages",
 }
 
+# --- Пресеты моделей OpenRouter (бесплатные, проверенные) ---
+# Список собран по живому /api/v1/models: id -> подпись в меню.
+
+OPENROUTER_MODEL_PRESETS: list[tuple[str, str]] = [
+    ("openrouter/free", "🆓 Free Router (авто-выбор free)"),
+    ("thinkingmachines/inkling:free", "Inkling 975B — лучший для чата"),
+    ("minimax/minimax-m3:free", "MiniMax M3 — быстрый и точный"),
+    ("nvidia/nemotron-3-ultra-550b-a55b:free", "Nemotron 3 Ultra (NVIDIA)"),
+    ("google/gemma-4-31b-it:free", "Gemma 4 31B (Google)"),
+    ("nvidia/nemotron-3-super-120b-a12b:free", "Nemotron 3 Super (NVIDIA)"),
+    ("minimax/minimax-m2.7:free", "MiniMax M2.7 — компактный"),
+]
+
+# Пресеты моделей для встроенных провайдеров (кроме OpenRouter)
+BUILTIN_MODEL_PRESETS: dict[str, list[tuple[str, str]]] = {
+    "openai": [
+        ("gpt-4o-mini", "GPT-4o mini"),
+        ("gpt-4o", "GPT-4o"),
+        ("gpt-3.5-turbo", "GPT-3.5 Turbo"),
+    ],
+    "gemini": [
+        ("gemini-1.5-flash", "Gemini 1.5 Flash"),
+        ("gemini-1.5-pro", "Gemini 1.5 Pro"),
+    ],
+    "deepseek": [
+        ("deepseek-chat", "DeepSeek Chat"),
+        ("deepseek-coder", "DeepSeek Coder"),
+    ],
+    "anthropic": [
+        ("claude-3-haiku-20240307", "Claude 3 Haiku"),
+        ("claude-3-sonnet-20240229", "Claude 3 Sonnet"),
+    ],
+}
+
+# --- Кастомные провайдеры (несколько, хранятся в JSON вместе с моделями) ---
+
+_custom_providers_lock = threading.Lock()
+
+
+def _load_custom_providers() -> dict[str, dict]:
+    """Load user-defined providers: {name: {base_url, models: [..], api_key}}."""
+    if not os.path.exists(PROVIDERS_PATH):
+        return {}
+    try:
+        with open(PROVIDERS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        logger.warning(f"{LOGGER_PREFIX} не удалось прочитать {PROVIDERS_PATH}", exc_info=True)
+        return {}
+
+
+def _save_custom_providers(providers: dict[str, dict]) -> None:
+    """Save user-defined providers to JSON file."""
+    with _custom_providers_lock:
+        try:
+            with open(PROVIDERS_PATH, "w", encoding="utf-8") as f:
+                json.dump(providers, f, ensure_ascii=False, indent=2)
+        except Exception:
+            logger.error(f"{LOGGER_PREFIX} не удалось сохранить {PROVIDERS_PATH}", exc_info=True)
+
+
+def _normalize_custom_url(base_url: str) -> str:
+    """Turn a user-entered base_url into a chat/completions endpoint."""
+    url = (base_url or "").strip().rstrip("/")
+    if url.endswith("/chat/completions"):
+        return url
+    return url + "/chat/completions"
+
+
+def get_custom_provider_url(name: str) -> str | None:
+    """Return normalized chat/completions URL for a custom provider, else None."""
+    entry = _load_custom_providers().get(name)
+    if not entry or not entry.get("base_url"):
+        return None
+    return _normalize_custom_url(entry["base_url"])
+
+
+def get_custom_provider_models(name: str) -> list[str]:
+    """Return saved model list for a custom provider."""
+    entry = _load_custom_providers().get(name)
+    if not entry:
+        return []
+    return [m for m in entry.get("models", []) if m]
+
+
+def get_custom_provider_key(name: str) -> str:
+    """Return the per-provider API key (may be empty → use the general key)."""
+    entry = _load_custom_providers().get(name)
+    return (entry or {}).get("api_key", "") or ""
+
+
+def get_api_key_for_provider(config: configparser.ConfigParser, provider: str) -> str:
+    """API key for a provider: custom provider key if set, otherwise the general key."""
+    if provider not in PROVIDERS:
+        key = get_custom_provider_key(provider)
+        if key:
+            return key
+    return get_api_key(config)
+
+
+def _model_menu_entries(provider: str) -> list[tuple[str, str]]:
+    """Deterministic (model, label) list shown in the model preset menu."""
+    if provider == "openrouter":
+        return list(OPENROUTER_MODEL_PRESETS)
+    if provider in PROVIDERS:
+        return list(BUILTIN_MODEL_PRESETS.get(provider, []))
+    return [(m, m) for m in get_custom_provider_models(provider)]
+
 # --- Preset system prompts (Russian) ---
 
 PRESET_PROMPTS: dict[str, str | None] = {
     "funpay_seller": (
-        "Ты - опытный продавец-консультант на маркетплейсе FunPay. Твоя задача - помогать "
-        "покупателям с вопросами о товарах, ценах, доставке и оплате. Ты вежливый, дружелюбный "
-        "и всегда стараешься помочь клиенту найти то, что ему нужно. "
-        "Отвечай кратко и по существу, без лишних вступлений. "
-        "Если покупатель спрашивает о наличии товара, проверь каталог и дай точный ответ. "
-        "Если товар есть в наличии с авто-выдачей, сообщи что покупатель получит товар мгновенно после оплаты. "
-        "Если товара нет, предложи подождать пополнения или посмотреть похожие товары. "
-        "При вопросах о гарантии, объясни что все товары проверены перед продажей. "
-        "Если покупатель недоволен или хочет возврат, вежливо попроси описать проблему и передай вопрос продавцу. "
-        "Никогда не придумывай информацию о товарах - используй только данные из каталога. "
-        "Не обсуждай конкурентов и не давай ссылки на сторонние ресурсы. "
-        "Если вопрос выходит за рамки твоих знаний, честно скажи что передашь вопрос продавцу."
+        "Ты — бот-консультант ЭТОГО МАГАЗИНА на FunPay. Ты продаёшь товары этого продавца. "
+        "Твоя главная задача — продавать именно ЭТИ товары, а не давать общую информацию про FunPay. "
+        "ВАЖНО: НИКОГДА не отвечай общими фразами про FunPay (типа 'На FunPay представлены товары...' или 'Вы можете найти здесь...'). "
+        "Всегда отвечай ТОЛЬКО про товары этого магазина из каталога ниже. "
+        "Если покупатель спрашивает о цене КОНКРЕТНОГО товара — покажи цену ТОЛЬКО ЭТОГО товара. "
+        "НЕ СКЛАДЫВАЙ цены разных товаров. Один вопрос = один товар. "
+        "Найди в каталоге товар, который соответствует вопросу покупателя, и покажи ЕГО цену. "
+        "Если подходящих товаров несколько — перечисли каждый ОТДЕЛЬНО с ценой. "
+        "Если покупатель спрашивает о наличии — проверь каталог и скажи есть ли товар. "
+        "Если товара нет в каталоге — скажи что данного товара сейчас нет и предложи написать продавцу. "
+        "Отвечай кратко, по делу, на языке покупателя. "
+        "Если покупатель недоволен или хочет возврат — вежливо попроси описать проблему и передай вопрос продавцу. "
+        "При вопросах о гарантии — объясни что все товары проверены перед продажей. "
+        "Не обсуждай конкурентов и не давай ссылки на сторонние ресурсы."
     ),
     "steam_rental": (
         "Ты - ассистент сервиса аренды Steam-аккаунтов. Ты помогаешь покупателям с вопросами "
@@ -1124,18 +1378,17 @@ PRESET_PROMPTS: dict[str, str | None] = {
 
 PRESET_PROMPTS_EN: dict[str, str | None] = {
     "funpay_seller": (
-        "You are an experienced sales consultant on the FunPay marketplace. Your task is to help "
-        "buyers with questions about products, prices, delivery, and payment. You are polite, friendly, "
-        "and always try to help the client find what they need. "
-        "Answer briefly and to the point, without unnecessary introductions. "
-        "If the buyer asks about product availability, check the catalog and give an exact answer. "
-        "If the product is in stock with auto-delivery, inform the buyer they will receive it instantly after payment. "
-        "If the product is out of stock, suggest waiting for restocking or looking at similar products. "
-        "For warranty questions, explain that all products are verified before sale. "
-        "If the buyer is unhappy or wants a refund, politely ask them to describe the problem and forward the question to the seller. "
-        "Never make up product information - only use catalog data. "
-        "Do not discuss competitors or provide links to external resources. "
-        "If the question is beyond your knowledge, honestly say you will forward it to the seller."
+        "You are a sales bot for THIS SPECIFIC STORE on FunPay. You sell products from this seller. "
+        "Your main job is to sell THESE products, not to give generic information about FunPay. "
+        "IMPORTANT: NEVER reply with generic FunPay info (like 'FunPay has various products...' or 'You can find...'). "
+        "ALWAYS reply ONLY about this store's products from the catalog below. "
+        "If the buyer asks about prices — show PRICES FROM THE CATALOG, not general FunPay ranges. "
+        "If the buyer asks about availability — check the catalog and say if the product exists. "
+        "If the product is not in the catalog — say it's currently unavailable and offer to contact the seller. "
+        "Reply briefly, in the buyer's language. "
+        "If the buyer is unhappy or wants a refund — politely ask them to describe the problem and forward to the seller. "
+        "For warranty questions — explain all products are verified before sale. "
+        "Do not discuss competitors or provide links to external resources."
     ),
     "steam_rental": (
         "You are an assistant for a Steam account rental service. You help buyers with questions "
@@ -1327,6 +1580,38 @@ def _get_learned_examples_text(max_items: int = 5) -> str:
 _pending_forwards: dict[str, dict] = {}
 _pending_forwards_lock = threading.Lock()
 
+# --- Duplicate-event gate: one buyer message can arrive via BOTH Cardinal
+# events (msg_new_msg + last_chat_message_changed); claim (chat_id, text)
+# for a short TTL so handle_message runs only once per exact-duplicate message.
+# NOTE: Tier 2 soft dedup was removed — both events now get processed.
+# If Cardinal sends two events for the same real message, only the
+# text-exact duplicate is suppressed.
+
+_recently_claimed: dict[str, float] = {}
+_recently_claimed_lock = threading.Lock()
+_CLAIM_TTL_SECONDS = 10.0
+
+
+def _claim_message_for_processing(chat_id: str, message_text: str) -> bool:
+    """Atomically claim (chat_id, normalized text) for the TTL window.
+
+    Returns True for the first caller, False only if the exact same text
+    arrives again within the TTL (true duplicate from Cardinal).
+    """
+    now = time.time()
+    text_key = f"{chat_id}|{(message_text or '').strip().lower()}"
+    with _recently_claimed_lock:
+        # Evict expired entries
+        for k in [k for k, ts in _recently_claimed.items() if now - ts > _CLAIM_TTL_SECONDS]:
+            del _recently_claimed[k]
+
+        # Exact text match only — both Cardinal events now pass through
+        if text_key in _recently_claimed:
+            return False
+
+        _recently_claimed[text_key] = now
+        return True
+
 
 # --- Language detection ---
 
@@ -1393,6 +1678,11 @@ _STOCK_CACHE_TTL = 30.0  # seconds
 _lot_details_cache: list[dict[str, str]] = []
 _lot_details_cache_time: float = 0.0
 _LOT_DETAILS_CACHE_TTL = 60.0  # seconds
+
+# Cache for full lot descriptions (from get_lot_page)
+_lot_pages_cache: dict[int, dict[str, str]] = {}  # {lot_id: {description, price, ...}}
+_lot_pages_cache_time: float = 0.0
+_LOT_PAGES_CACHE_TTL = 300.0  # 5 minutes — full descriptions change rarely
 
 # --- Anti-spam tracking ---
 
@@ -1540,6 +1830,77 @@ def _get_templates(config: configparser.ConfigParser) -> dict[str, str]:
     return templates
 
 
+# --- Product Catalog (manual product entries for AI context) ---
+
+def _get_product_catalog(config: configparser.ConfigParser) -> list[dict[str, str]]:
+    """Get manually added products from config. Format:
+    [ProductCatalog]
+    product_0_name = FC Mobile Буст
+    product_0_price = от 500 руб.
+    product_0_desc = Профессиональный буст в FC Mobile
+    product_1_name = ...
+    """
+    products = []
+    if not config.has_section("ProductCatalog"):
+        return products
+    # Find all product indices
+    indices = set()
+    for key, _ in config.items("ProductCatalog"):
+        if key.startswith("product_") and "_" in key[8:]:
+            parts = key[8:].split("_", 1)
+            try:
+                indices.add(int(parts[0]))
+            except ValueError:
+                pass
+    for idx in sorted(indices):
+        name = config.get("ProductCatalog", f"product_{idx}_name", fallback="")
+        price = config.get("ProductCatalog", f"product_{idx}_price", fallback="")
+        desc = config.get("ProductCatalog", f"product_{idx}_desc", fallback="")
+        if name:
+            products.append({"title": name, "price": price, "description": desc})
+    return products
+
+
+def _add_product_to_catalog(name: str, price: str, desc: str) -> None:
+    """Add a product to the ProductCatalog config section."""
+    config = load_config()
+    if not config.has_section("ProductCatalog"):
+        config.add_section("ProductCatalog")
+    # Find next index
+    max_idx = -1
+    for key, _ in config.items("ProductCatalog"):
+        if key.startswith("product_") and "_name" in key:
+            try:
+                idx = int(key[8:].split("_")[0])
+                max_idx = max(max_idx, idx)
+            except ValueError:
+                pass
+    new_idx = max_idx + 1
+    config.set("ProductCatalog", f"product_{new_idx}_name", name)
+    config.set("ProductCatalog", f"product_{new_idx}_price", price)
+    config.set("ProductCatalog", f"product_{new_idx}_desc", desc)
+    save_config(config)
+
+
+def _remove_product_from_catalog(name: str) -> bool:
+    """Remove a product by name from the catalog. Returns True if found."""
+    config = load_config()
+    if not config.has_section("ProductCatalog"):
+        return False
+    found = False
+    to_remove = []
+    for key, value in config.items("ProductCatalog"):
+        if key.endswith("_name") and value == name:
+            prefix = key[:-5]  # e.g. product_0
+            to_remove.extend([f"{prefix}_name", f"{prefix}_price", f"{prefix}_desc"])
+            found = True
+    for key in to_remove:
+        config.remove_option("ProductCatalog", key)
+    if found:
+        save_config(config)
+    return found
+
+
 def _get_promo_codes(config: configparser.ConfigParser) -> list[dict[str, str]]:
     """Get promo codes from config. Format: CODE:description, one per line or pipe-separated."""
     if not config.getboolean("Promos", "enabled", fallback=False):
@@ -1681,7 +2042,11 @@ def get_system_prompt(config: configparser.ConfigParser) -> str:
     return config.get(
         "General",
         "system_prompt",
-        fallback="You are a helpful assistant for a FunPay seller.",
+        fallback=(
+            "Ты - вежливый и компетентный продавец-консультант на FunPay. "
+            "Помогай покупателям с вопросами о товарах, ценах, наличии и доставке. "
+            "Отвечай кратко, по-русски и только на основе данных каталога."
+        ),
     )
 
 
@@ -1734,8 +2099,39 @@ def get_holding_message(config: configparser.ConfigParser) -> str:
     return config.get(
         "Forwarding",
         "holding_message",
-        fallback="Your question has been forwarded to the seller. Please wait for a response.",
+        fallback="Ваш вопрос передан продавцу. Пожалуйста, ожидайте ответа.",
     )
+
+
+def reset_holding_message_to_default(config_path) -> None:
+    """One-shot helper: rewrite the user's holding_message to the RU default.
+
+    The previous English default was stored in users' ai_chat_plugin.cfg on
+    first save. Call this from a maintenance entry-point (e.g. plugin
+    upgrade hook) to normalize it without forcing the user to re-edit the
+    config manually.
+    """
+    import configparser as _cp
+
+    if not config_path or not Path(config_path).exists():
+        return
+    cfg = _cp.ConfigParser()
+    cfg.read(config_path, encoding="utf-8")
+    if not cfg.has_section("Forwarding"):
+        return
+    current = cfg.get("Forwarding", "holding_message", fallback="").strip()
+    english_defaults = {
+        "Your question has been forwarded to the seller. Please wait for a response.",
+        "Forwarding",
+    }
+    if current in english_defaults:
+        cfg.set(
+            "Forwarding",
+            "holding_message",
+            "Ваш вопрос передан продавцу. Пожалуйста, ожидайте ответа.",
+        )
+        with open(config_path, "w", encoding="utf-8") as f:
+            cfg.write(f)
 
 
 def should_notify_auto_delivery(config: configparser.ConfigParser) -> bool:
@@ -1925,14 +2321,54 @@ def _get_lot_details(c: Cardinal) -> list[dict[str, str]]:
 
     try:
         lots = None
-        if hasattr(c, "account") and c.account is not None:
-            if hasattr(c.account, "lots") and c.account.lots:
-                lots = c.account.lots
-            elif hasattr(c.account, "get_lots"):
-                lots = c.account.get_lots()
+        # --- Primary: c.profile (UserProfile with get_lots()) ---
+        # Cardinal stores lots in c.profile, NOT in c.account!
+        profile = getattr(c, "profile", None)
+        if profile is not None and hasattr(profile, "get_lots"):
+            try:
+                lots = profile.get_lots()
+                if lots:
+                    logger.info(
+                        f"{LOGGER_PREFIX} лоты загружены из c.profile.get_lots(): {len(lots)} шт.")
+            except Exception as e:
+                logger.debug(f"c.profile.get_lots() failed: {e}")
+        # --- Fallback: c.account.get_lots() ---
+        if not lots:
+            acc = getattr(c, "account", None)
+            if acc is not None and hasattr(acc, "get_lots"):
+                try:
+                    lots = acc.get_lots()
+                    if lots:
+                        logger.info(
+                            f"{LOGGER_PREFIX} лоты загружены из c.account.get_lots(): {len(lots)} шт.")
+                except Exception as e:
+                    logger.debug(f"c.account.get_lots() failed: {e}")
+        # --- Fallback: c.account.lots attribute ---
+        if not lots:
+            acc = getattr(c, "account", None)
+            if acc is not None and hasattr(acc, "lots"):
+                try:
+                    raw = acc.lots
+                    if raw:
+                        lots = raw
+                except Exception:
+                    pass
 
         if lots:
-            lot_items = lots if isinstance(lots, (list, tuple)) else lots.values()
+            if isinstance(lots, dict):
+                lot_items = list(lots.values())
+            elif isinstance(lots, (list, tuple)):
+                lot_items = list(lots)
+            else:
+                lot_items = []
+            # Debug: dump first lot's attributes to understand the data structure
+            if lot_items and not _lot_details_cache:
+                first = lot_items[0]
+                attrs = {k: type(getattr(first, k, None)).__name__ for k in dir(first) if not k.startswith('_')}
+                logger.info(
+                    f"{LOGGER_PREFIX} account.lots: {len(lot_items)} лотов, "
+                    f"тип: {type(lots).__name__}, "
+                    f"атрибуты 1-го лота: {attrs}")
             for lot in lot_items:
                 lot_info: dict[str, str] = {}
 
@@ -2002,8 +2438,72 @@ def _get_lot_details(c: Cardinal) -> list[dict[str, str]]:
     except Exception as e:
         logger.debug(f"Could not gather lot details from MAIN_CFG: {e}")
 
+    # --- Enrich with full descriptions from LotPage (get_lot_page API) ---
+    global _lot_pages_cache, _lot_pages_cache_time
+    try:
+        now_pages = time.time()
+        pages_cache_fresh = (
+            _lot_pages_cache and (now_pages - _lot_pages_cache_time) < _LOT_PAGES_CACHE_TTL
+        )
+        # Only fetch if we have lots with IDs and cache is stale
+        lots_with_ids = [d for d in details if d.get("id")]
+        if lots_with_ids and not pages_cache_fresh and hasattr(c, "account") and c.account:
+            fetched = 0
+            for d in lots_with_ids:
+                lot_id = int(d["id"])
+                if lot_id in _lot_pages_cache:
+                    # Use cached page
+                    page_data = _lot_pages_cache[lot_id]
+                    if page_data.get("full_description"):
+                        d["full_description"] = page_data["full_description"]
+                    if page_data.get("price") and not d.get("price"):
+                        d["price"] = page_data["price"]
+                    continue
+                try:
+                    if hasattr(c.account, "get_lot_page"):
+                        page = c.account.get_lot_page(lot_id)
+                        if page and hasattr(page, "full_description") and page.full_description:
+                            d["full_description"] = str(page.full_description)
+                            _lot_pages_cache[lot_id] = {
+                                "full_description": str(page.full_description),
+                                "price": str(page.price) if hasattr(page, "price") else "",
+                            }
+                            fetched += 1
+                            time.sleep(0.3)  # Rate limit: 1 request per 300ms
+                except Exception as e:
+                    logger.debug(f"{LOGGER_PREFIX} get_lot_page({lot_id}) failed: {e}")
+            if fetched > 0:
+                _lot_pages_cache_time = now_pages
+                logger.info(
+                    f"{LOGGER_PREFIX} загружено {fetched} полных описаний лотов (LotPage)")
+    except Exception as e:
+        logger.debug(f"Could not enrich with LotPage data: {e}")
+
+    # --- Manual product catalog (added by user in /aichat → Продажи → Каталог) ---
+    try:
+        config = load_config()
+        manual_products = _get_product_catalog(config)
+        for mp in manual_products:
+            # Don't duplicate if already from account.lots or MAIN_CFG
+            already = any(
+                d.get("title", "").lower() == mp["title"].lower()
+                for d in details
+            )
+            if not already:
+                details.append(mp)
+    except Exception as e:
+        logger.debug(f"Could not load manual product catalog: {e}")
+
     _lot_details_cache = details
     _lot_details_cache_time = now
+    if details:
+        logger.info(
+            f"{LOGGER_PREFIX} каталог товаров загружен: {len(details)} лотов "
+            f"({', '.join(d.get('title', '?')[:30] for d in details[:5])})")
+    else:
+        logger.warning(
+            f"{LOGGER_PREFIX} каталог товаров ПУСТ — AI не знает о ваших товарах! "
+            f"Проверьте что Cardinal загрузил лоты (c.account.lots).")
     return details
 
 
@@ -2050,34 +2550,37 @@ def build_system_prompt(c: Cardinal, config: configparser.ConfigParser, chat_nam
         for lot in lot_details:
             title = lot.get("title", "Unknown")
             safe_title = _sanitize_lot_name(title)
-            line_parts = [f"  Name: {safe_title}"]
+            line_parts = [f"  Товар: {safe_title}"]
 
-            if "description" in lot and lot["description"]:
-                desc = lot["description"][:200]
-                line_parts.append(f"  Description: {desc}")
+            # Prefer full_description (from LotPage) over short description
+            desc_text = lot.get("full_description") or lot.get("description")
+            if desc_text:
+                # Use more of the full description (500 chars for detailed info)
+                max_len = 500 if lot.get("full_description") else 200
+                line_parts.append(f"  Описание: {desc_text[:max_len]}")
             if "price" in lot:
-                line_parts.append(f"  Price: {lot['price']}")
+                line_parts.append(f"  Цена: {lot['price']} руб.")
             if "category" in lot:
-                line_parts.append(f"  Category: {lot['category']}")
+                line_parts.append(f"  Категория: {lot['category']}")
             if "subcategory" in lot:
-                line_parts.append(f"  Subcategory: {lot['subcategory']}")
+                line_parts.append(f"  Подкатегория: {lot['subcategory']}")
             if "active" in lot:
-                status = "active" if lot["active"].lower() in ("true", "1") else "inactive"
-                line_parts.append(f"  Status: {status}")
+                status = "активен" if lot["active"].lower() in ("true", "1") else "неактивен"
+                line_parts.append(f"  Статус: {status}")
 
             stock = stock_counts.get(title)
             if stock is not None:
                 if stock > 0:
-                    line_parts.append(f"  Auto-delivery: available ({stock} in stock)")
+                    line_parts.append(f"  Автовыдача: есть ({stock} в наличии)")
                 elif stock == 0:
-                    line_parts.append("  Auto-delivery: not available")
+                    line_parts.append("  Автовыдача: нет в наличии")
                 elif stock == -1:
-                    line_parts.append("  Auto-delivery: configured, stock unknown")
+                    line_parts.append("  Автовыдача: настроена, остаток неизвестен")
 
             catalog_lines.append("\n".join(line_parts))
 
         parts.append(
-            "\n\nFull product catalog (use this information to answer buyer questions):\n"
+            "\n\nКАТАЛОГ ТОВАРОВ ПРОДАВЦА (ОБЯЗАТЕЛЬНО используй эту информацию для ответов):\n"
             + "\n---\n".join(catalog_lines)
         )
 
@@ -2110,12 +2613,12 @@ def build_system_prompt(c: Cardinal, config: configparser.ConfigParser, chat_nam
     # Add delivery instructions
     if stock_counts:
         parts.append(
-            "\nIf a lot has auto-delivery and stock available, tell the buyer: "
-            "\"You can buy now and receive the product instantly via auto-delivery.\""
+            "\nЕсли товар есть в наличии с автовыдачей, скажи покупателю: "
+            "\"Вы можете купить сейчас и получить товар мгновенно через автовыдачу.\""
         )
         parts.append(
-            "If a lot has no stock or no auto-delivery, tell the buyer: "
-            "\"Please wait, the seller will process your order manually.\""
+            "Если товара нет в наличии или нет автовыдачи, скажи покупателю: "
+            "\"Пожалуйста, подождите — продавец обработает ваш заказ вручную.\""
         )
 
     # Try to detect which specific product the buyer is asking about
@@ -2129,30 +2632,30 @@ def build_system_prompt(c: Cardinal, config: configparser.ConfigParser, chat_nam
 
     if relevant_lot:
         context_lines = [
-            "\n\nThe buyer is currently asking about this specific product:"
+            "\n\nПокупатель спрашивает об этом конкретном товаре:"
         ]
         title = relevant_lot.get("title", "")
         if title:
-            context_lines.append(f"  Product: {_sanitize_lot_name(title)}")
+            context_lines.append(f"  Товар: {_sanitize_lot_name(title)}")
         if "description" in relevant_lot:
-            context_lines.append(f"  Description: {relevant_lot['description'][:200]}")
+            context_lines.append(f"  Описание: {relevant_lot['description'][:200]}")
         if "price" in relevant_lot:
-            context_lines.append(f"  Price: {relevant_lot['price']}")
+            context_lines.append(f"  Цена: {relevant_lot['price']} руб.")
         if "category" in relevant_lot:
-            context_lines.append(f"  Category: {relevant_lot['category']}")
+            context_lines.append(f"  Категория: {relevant_lot['category']}")
         if "subcategory" in relevant_lot:
-            context_lines.append(f"  Subcategory: {relevant_lot['subcategory']}")
+            context_lines.append(f"  Подкатегория: {relevant_lot['subcategory']}")
 
         stock = stock_counts.get(title)
         if stock is not None:
             if stock > 0:
-                context_lines.append(f"  Auto-delivery: available ({stock} in stock)")
+                context_lines.append(f"  Автовыдача: есть ({stock} в наличии)")
             else:
-                context_lines.append("  Auto-delivery: not available")
+                context_lines.append("  Автовыдача: нет в наличии")
 
         context_lines.append(
-            "Base your answers on the above product information. "
-            "If the buyer asks what they will receive, describe this product."
+            "Отвечай на основе информации о товаре выше. "
+            "Если покупатель спрашивает что получит — опиши этот товар."
         )
         parts.append("\n".join(context_lines))
     elif relevant_lot is None and len(lot_details) > 1:
@@ -2219,12 +2722,20 @@ def build_system_prompt(c: Cardinal, config: configparser.ConfigParser, chat_nam
                 promo_lines.append(f"  Code: {p['code']}")
         parts.append("\n".join(promo_lines))
 
-    # Language detection reinforcement
+    # Language rule
     if config.getboolean("LanguageDetect", "enabled", fallback=False):
         parts.append(
             "\n\nIMPORTANT: Detect the language of the buyer message and ALWAYS reply "
             "in that same language. If the buyer writes in Russian, reply in Russian. "
             "If in English, reply in English. Match their language exactly."
+        )
+    else:
+        # Default policy: Russian-first. Switch to English only when the buyer
+        # writes in English. Never reply in English to a Russian message.
+        parts.append(
+            "\n\nIMPORTANT: By default ALWAYS reply in Russian, even if the buyer's "
+            "message contains transliteration, brand names or occasional English words. "
+            "Switch to English ONLY if the buyer's message is clearly written in English."
         )
 
     # Buyer context
@@ -2238,6 +2749,19 @@ def build_system_prompt(c: Cardinal, config: configparser.ConfigParser, chat_nam
         learned_text = _get_learned_examples_text(max_items=5)
         if learned_text:
             parts.append(learned_text)
+
+    # Final language reminder (models like Nemotron sometimes ignore earlier instructions)
+    if config.getboolean("LanguageDetect", "enabled", fallback=False):
+        parts.append(
+            "\n\nREMINDER: Reply in the SAME language as the buyer. "
+            "Russian message → Russian reply. English message → English reply. "
+            "Do NOT mix languages."
+        )
+    else:
+        parts.append(
+            "\n\nREMINDER: By default reply in RUSSIAN. "
+            "NEVER reply in English to a Russian message."
+        )
 
     # Classification instructions
     parts.append(
@@ -2335,18 +2859,26 @@ def call_ai_api(
     user_message: str,
     timeout: int,
     provider: str = "openrouter",
-) -> tuple[str | None, int]:
-    """Call the AI API for the specified provider and return (response_text, total_tokens).
+) -> tuple[str | None, int, str | None]:
+    """Call the AI API for the specified provider and return (response_text, total_tokens, error_msg).
 
-    For openai/deepseek/gemini/openrouter: uses OpenAI-compatible format.
+    For openai/deepseek/gemini/openrouter/custom: uses OpenAI-compatible format.
     For anthropic: uses Anthropic Messages API format.
 
-    Returns (None, 0) on error. Retries once on transient failure.
+    Returns (None, 0, error_msg) on error. Retries once on transient failure.
+    error_msg is a human-readable string explaining the failure.
     """
-    if provider not in PROVIDERS:
-        provider = "openrouter"
-
-    api_url = PROVIDERS[provider]
+    if provider in PROVIDERS:
+        api_url = PROVIDERS[provider]
+    else:
+        custom_url = get_custom_provider_url(provider)
+        if custom_url:
+            api_url = custom_url
+        else:
+            logger.warning(
+                f"{LOGGER_PREFIX} неизвестный провайдер {provider!r}, откат на openrouter")
+            provider = "openrouter"
+            api_url = PROVIDERS[provider]
 
     messages = []
     history = get_history(chat_id)
@@ -2394,6 +2926,15 @@ def call_ai_api(
             response.raise_for_status()
             data = response.json()
 
+            # Check for API-level error in response body
+            if isinstance(data, dict) and data.get("error"):
+                err_detail = data["error"]
+                if isinstance(err_detail, dict):
+                    err_msg_body = err_detail.get("message") or str(err_detail)
+                else:
+                    err_msg_body = str(err_detail)
+                return None, 0, f"API ошибка от {provider}: {err_msg_body[:200]}"
+
             if provider == "anthropic":
                 # Anthropic response format
                 text = data["content"][0]["text"]
@@ -2404,35 +2945,57 @@ def call_ai_api(
                     total_tokens = input_tokens + output_tokens
             else:
                 # OpenAI-compatible response format
-                text = data["choices"][0]["message"]["content"]
+                try:
+                    text = data["choices"][0]["message"]["content"]
+                except (KeyError, IndexError, TypeError) as parse_err:
+                    # Model may return an unexpected structure (e.g. no choices)
+                    raw = str(data)[:300]
+                    return None, 0, f"Неожиданный формат ответа от {provider} (модель {model}): {parse_err}. Тело: {raw}"
                 total_tokens = 0
                 if "usage" in data and "total_tokens" in data["usage"]:
                     total_tokens = int(data["usage"]["total_tokens"])
 
-            return text, total_tokens
+            return text, total_tokens, None
         except requests.exceptions.HTTPError as e:
             status_code = e.response.status_code if e.response is not None else 0
-            if status_code >= 500 or status_code == 429:
+            err_body = ""
+            try:
+                err_body = (e.response.text or "")[:200]
+            except Exception:
+                pass
+            if status_code == 429:
+                err_msg = f"HTTP 429 — лимит запросов OpenRouter (модель {model}). Попробуйте позже."
                 if attempt < max_attempts - 1:
-                    logger.info(
-                        f"{provider} API returned {status_code}, retrying..."
-                    )
+                    logger.info(f"{LOGGER_PREFIX} {provider} HTTP 429 (модель {model}), повтор...")
+                    time.sleep(2)
+                    continue
+                logger.warning(f"{LOGGER_PREFIX} {provider} HTTP 429 (модель {model}): {err_body}")
+                return None, 0, err_msg
+            if status_code >= 500:
+                err_msg = f"HTTP {status_code} — сервер {provider} временно недоступен (модель {model})."
+                if attempt < max_attempts - 1:
+                    logger.info(f"{LOGGER_PREFIX} {provider} HTTP {status_code} (модель {model}), повтор...")
                     time.sleep(1)
                     continue
-            logger.warning(f"{provider} API HTTP error: {e}")
-            return None, 0
+                logger.warning(f"{LOGGER_PREFIX} {provider} HTTP {status_code} (модель {model}): {err_body}")
+                return None, 0, err_msg
+            err_msg = f"HTTP {status_code} — ошибка API {provider} (модель {model})."
+            logger.warning(f"{LOGGER_PREFIX} {provider} HTTP ошибка (модель {model}): {e}")
+            return None, 0, err_msg
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            err_msg = f"Ошибка соединения с {provider} (модель {model}): {type(e).__name__}."
             if attempt < max_attempts - 1:
-                logger.info(f"{provider} API connection issue, retrying: {e}")
+                logger.info(f"{LOGGER_PREFIX} {provider} проблема соединения (модель {model}), повтор: {e}")
                 time.sleep(1)
                 continue
-            logger.warning(f"{provider} API connection error: {e}")
-            return None, 0
+            logger.warning(f"{LOGGER_PREFIX} {provider} ошибка соединения (модель {model}): {e}")
+            return None, 0, err_msg
         except Exception as e:
-            logger.warning(f"{provider} API error: {e}")
-            return None, 0
+            err_msg = f"Ошибка API {provider} (модель {model}): {e}"
+            logger.warning(f"{LOGGER_PREFIX} {provider} ошибка API (модель {model}): {e}")
+            return None, 0, err_msg
 
-    return None, 0
+    return None, 0, "Неизвестная ошибка"
 
 
 def call_openrouter_api(
@@ -2442,15 +3005,72 @@ def call_openrouter_api(
     chat_id: str,
     user_message: str,
     timeout: int,
-) -> tuple[str | None, int]:
-    """Call the OpenRouter API and return (response_text, total_tokens).
+) -> tuple[str | None, int, str | None]:
+    """Call the OpenRouter API and return (response_text, total_tokens, error_msg).
 
-    Returns (None, 0) on error. Retries once on transient failure.
+    Returns (None, 0, error_msg) on error. Retries once on transient failure.
     Backward-compatible wrapper around call_ai_api.
     """
     config = load_config()
     provider = get_provider(config)
     return call_ai_api(api_key, model, system_prompt, chat_id, user_message, timeout, provider)
+
+
+def run_model_test(
+    model: str, provider: str, timeout: int = 15,
+) -> tuple[bool, str | None, int, str | None]:
+    """Quick connectivity test for a provider/model combo.
+
+    Returns ``(ok, reply, tokens, error_msg)``. ``ok`` is False when the API key is missing
+    or the request fails. Uses a scratch chat_id so buyer history is untouched.
+    ``error_msg`` is a human-readable explanation of the failure.
+    """
+    config = load_config()
+    api_key = get_api_key_for_provider(config, provider)
+    if not api_key or api_key == "YOUR_API_KEY_HERE":
+        logger.warning(f"{LOGGER_PREFIX} тест модели {model}: API ключ не настроен")
+        return False, None, 0, "API ключ не настроен. Откройте /aichat → 🗝 API key."
+    reply, tokens, err = call_ai_api(
+        api_key, model,
+        "Ты тестовый ассистент. Ответь ровно: TEST_OK",
+        "__test__",
+        "Привет, это работает?",
+        timeout,
+        provider,
+    )
+    ok = reply is not None
+    if ok:
+        logger.info(f"{LOGGER_PREFIX} тест модели {model} ({provider}) пройден, токенов: {tokens}")
+    else:
+        logger.warning(f"{LOGGER_PREFIX} тест модели {model} ({provider}) НЕ пройден: {err}")
+    return ok, reply, tokens, err
+
+
+def _model_test_text(model: str, provider: str, ok: bool, reply: str | None, tokens: int, error_msg: str | None = None) -> str:
+    """Format the auto-test result message shown after saving a model."""
+    if not api_key_present_for(provider):
+        return (
+            f"\u26a0\ufe0f Модель сохранена: <code>{model}</code>\n"
+            f"\u274c Тест не выполнен: API ключ не настроен.\n"
+            f"Откройте /aichat \u2192 \U0001f511 API key."
+        )
+    if ok:
+        return (
+            f"\u2705 Модель сохранена и протестирована: <code>{model}</code>\n"
+            f"\U0001f4ca Токенов: {tokens}\n"
+            f"\U0001f4ac Ответ: <i>{(reply or '')[:150]}</i>"
+        )
+    err_line = error_msg or "Проверьте название модели и API ключ."
+    return (
+        f"\u26a0\ufe0f Модель сохранена: <code>{model}</code>\n"
+        f"\u274c Тест НЕ пройден:"
+    ) + f"\n{err_line}"
+
+
+def api_key_present_for(provider: str) -> bool:
+    """True if an API key is configured for the provider (general or per-provider)."""
+    key = get_api_key_for_provider(load_config(), provider)
+    return bool(key) and key != "YOUR_API_KEY_HERE"
 
 
 # ======================================================================
@@ -2495,12 +3115,14 @@ def route_completion(
     the legacy single-model behaviour.
     """
     models = [primary_model] + [m for m in (fallback_models or []) if m]
+    last_err = None
     for model in models:
-        text, tokens = call_ai_api(
+        text, tokens, err = call_ai_api(
             api_key, model, system_prompt, chat_id, user_message, timeout, provider
         )
         if text is not None:
             return text, tokens, model
+        last_err = err
     return None, 0, None
 
 
@@ -2849,6 +3471,40 @@ def is_auto_response_command(c: Cardinal, message_text: str) -> bool:
     return message_text.strip() in c.AR_CFG.sections()
 
 
+# --- Bot / system message filter ---
+# Messages from internal bots (steam_rental, steam_ranger, etc.) that should
+# NEVER be forwarded to the AI. Patterns cover both RU and EN templates.
+_BOT_MESSAGE_PATTERNS: list[str] = [
+    # Steam Guard codes
+    "Steam Guard",
+    " steam guard ",
+    # Order/delivery notifications from internal bots
+    "Осталось кодов:",
+    "codes remaining:",
+    "Код действителен",
+    "code is valid",
+    "Подождите ",
+    "please wait",
+]
+
+
+def _is_bot_system_message(message_text: str) -> bool:
+    """Return True if the message looks like an internal bot/system message
+    (Steam Guard codes, order status updates, bot commands, etc.) that
+    should not be processed by the AI chat plugin."""
+    text = (message_text or "").strip()
+    if not text:
+        return False
+    lower = text.lower()
+    for pattern in _BOT_MESSAGE_PATTERNS:
+        if pattern.lower() in lower:
+            return True
+    # Bot commands: !2фа, !код, !продлить, !статус, !помощь, !rck, !code, etc.
+    if text.startswith("!"):
+        return True
+    return False
+
+
 def handle_message(
     c: Cardinal,
     chat_id: str,
@@ -2860,6 +3516,20 @@ def handle_message(
 
     This function runs in a separate thread to avoid blocking.
     """
+    # --- Duplicate-event gate: the same buyer message can arrive via BOTH
+    # msg_new_msg and last_chat_message_changed; drop the second copy fast.
+    if not _claim_message_for_processing(chat_id, message_text):
+        logger.info(
+            f"{LOGGER_PREFIX} дубликат события для чата {chat_id} "
+            f"({chat_name!r}) — пропуск (двойная доставка Cardinal)")
+        return
+
+    # --- Bot/system message filter: skip Steam Guard codes, order updates, etc.
+    if _is_bot_system_message(message_text):
+        logger.debug(
+            f"{LOGGER_PREFIX} системное/бот-сообщение в чате {chat_id} — пропуск")
+        return
+
     config = load_config()
 
     if not is_enabled(config):
@@ -2969,9 +3639,10 @@ def handle_message(
             logger.error(f"Failed to send budget reply to chat {chat_id}: {e}")
         return
 
-    api_key = get_api_key(config)
+    provider = get_provider(config)
+    api_key = get_api_key_for_provider(config, provider)
     if not api_key or api_key == "YOUR_API_KEY_HERE":
-        logger.warning("OpenRouter API key is not configured.")
+        logger.warning(f"{LOGGER_PREFIX} API ключ не настроен (провайдер {provider}).")
         return
 
     model = get_model(config)
@@ -3001,7 +3672,6 @@ def handle_message(
             conversation_history[chat_id] = history
 
     # Call the API via the Model_Router (primary + fallbacks)
-    provider = get_provider(config)
     fallback_models = get_fallback_models(config)
     _t_start = time.time()
     response_text, tokens_used, responding_model = route_completion(
@@ -3012,9 +3682,15 @@ def handle_message(
 
     if response_text is None:
         logger.warning(
-            f"No response from AI for chat {chat_id}. Skipping auto-reply."
+            f"{LOGGER_PREFIX} нет ответа от AI для чата {chat_id} "
+            f"(провайдер {provider}, модели: {[model] + fallback_models}). Auto-reply пропущен."
         )
         return
+
+    logger.info(
+        f"{LOGGER_PREFIX} AI ответ получен: чат {chat_id}, модель {responding_model or model}, "
+        f"токенов {tokens_used}, {latency_ms} мс"
+    )
 
     # Parse the classification
     classification, reply_text = parse_response(response_text)
@@ -3037,7 +3713,47 @@ def handle_message(
         # Send reply directly to the buyer
         try:
             c.send_message(chat_id, reply_text, chat_name)
-            logger.info(f"Sent AI reply to chat {chat_id} ({chat_name}).")
+            logger.info(
+                f"{LOGGER_PREFIX} AI-ответ отправлен в чат {chat_id} ({chat_name}), "
+                f"модель {responding_model or model}."
+            )
+            # Notify seller that AI answered (optional)
+            if config.getboolean("Forwarding", "notify_on_standard", fallback=False):
+                try:
+                    used_model = responding_model or model
+                    # Get improvement suggestion from AI (non-blocking)
+                    suggestion = ""
+                    try:
+                        suggest_prompt = (
+                            "Ты — ревьюер ответов продавца. Вот вопрос покупателя и ответ продавца. "
+                            "Предложи ОДНУ краткую идею как улучшить ответ (1-2 предложения). "
+                            "Если ответ хороший — просто скажи '✅ Ответ хороший'. "
+                            "Отвечай ТОЛЬКО на русском."
+                        )
+                        suggest_reply, _ = call_ai_api(
+                            api_key, model, suggest_prompt, "__suggest__",
+                            f"Вопрос: {message_text}\nОтвет продавца: {reply_text}",
+                            10, provider,
+                        )
+                        if suggest_reply:
+                            suggestion = suggest_reply.strip()
+                    except Exception:
+                        pass
+                    notify_text = (
+                        f"<b>🤖 AI ответил покупателю</b>\n\n"
+                        f"Chat: <b>{chat_name}</b>\n"
+                        f"Buyer: <b>{author}</b>\n\n"
+                        f"<b>Вопрос:</b> {message_text}\n\n"
+                        f"<b>🤖 Модель:</b> <code>{used_model}</code>\n\n"
+                        f"<b>Ответ AI:</b>\n{reply_text}"
+                    )
+                    if suggestion:
+                        notify_text += f"\n\n<b>💡 Как улучшить:</b>\n<i>{suggestion}</i>"
+                    c.telegram.send_notification(
+                        notify_text, None, NotificationTypes.new_message
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to send standard notification: {e}")
             # В историю кладём именно отправленный ответ.
             add_to_history(chat_id, "assistant", reply_text, max_history)
         except Exception as e:
@@ -3046,28 +3762,57 @@ def handle_message(
     elif classification == "FORWARD":
         forward_enabled = should_forward_non_standard(config)
 
-        # Send a configurable holding message to the buyer
-        holding_message = get_holding_message(config)
-        try:
-            c.send_message(chat_id, holding_message, chat_name)
-            logger.info(
-                f"Sent holding message to chat {chat_id} ({chat_name})."
-            )
-            # В историю кладём отправленную «заглушку», а НЕ непосланный
-            # AI-ответ (reply_text уходит только продавцу как подсказка).
-            add_to_history(chat_id, "assistant", holding_message, max_history)
-        except Exception as e:
-            logger.error(f"Failed to send holding message to chat {chat_id}: {e}")
+        if not forward_enabled:
+            # Forwarding disabled: AI answers directly even for non-standard questions
+            try:
+                c.send_message(chat_id, reply_text, chat_name)
+                logger.info(
+                    f"{LOGGER_PREFIX} AI-ответ (FORWARD→STANDARD, пересылка выключена) "
+                    f"отправлен в чат {chat_id} ({chat_name}), модель {responding_model or model}."
+                )
+                add_to_history(chat_id, "assistant", reply_text, max_history)
+            except Exception as e:
+                logger.error(f"Failed to send message to chat {chat_id}: {e}")
+            # Still notify seller if notify_on_standard is enabled
+            if config.getboolean("Forwarding", "notify_on_standard", fallback=False):
+                try:
+                    used_model = responding_model or model
+                    notify_text = (
+                        f"<b>🤖 AI ответил (без пересылки)</b>\n\n"
+                        f"Chat: <b>{chat_name}</b>\n"
+                        f"Buyer: <b>{author}</b>\n\n"
+                        f"<b>Вопрос:</b> {message_text}\n\n"
+                        f"<b>🤖 Модель:</b> <code>{used_model}</code>\n\n"
+                        f"<b>Ответ AI:</b>\n{reply_text}"
+                    )
+                    c.telegram.send_notification(
+                        notify_text, None, NotificationTypes.new_message
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to send standard notification: {e}")
+        else:
+            # Forwarding enabled: send holding message + forward to seller
+            holding_message = get_holding_message(config)
+            try:
+                c.send_message(chat_id, holding_message, chat_name)
+                logger.info(
+                    f"Sent holding message to chat {chat_id} ({chat_name})."
+                )
+                add_to_history(chat_id, "assistant", holding_message, max_history)
+            except Exception as e:
+                logger.error(f"Failed to send holding message to chat {chat_id}: {e}")
 
         # Forward to seller via Telegram if enabled
         if forward_enabled:
             try:
+                used_model = responding_model or model
                 notification_text = (
                     f"<b>{_t('ai_manual_attention')}</b>\n\n"
                     f"Chat: <b>{chat_name}</b>\n"
                     f"Buyer: <b>{author}</b>\n\n"
-                    f"Message: {message_text}\n\n"
-                    f"AI suggested reply: {reply_text}"
+                    f"<b>Вопрос покупателя:</b>\n{message_text}\n\n"
+                    f"<b>🤖 Модель:</b> <code>{used_model}</code>\n\n"
+                    f"<b>Ответ модели:</b>\n{reply_text}"
                 )
                 keyboard = keyboards.reply(chat_id, chat_name)
                 c.telegram.send_notification(
@@ -3230,6 +3975,8 @@ def _settings_keyboard() -> telebot.types.InlineKeyboardMarkup:
         telebot.types.InlineKeyboardButton("\U0001f4b0 \u041f\u0440\u043e\u0434\u0430\u0436\u0438", callback_data=AIChatCBT.CATEGORY_SALES),
     )
     kb.row(telebot.types.InlineKeyboardButton("\U0001f4ca \u0421\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0430", callback_data=AIChatCBT.CATEGORY_STATS))
+    kb.row(telebot.types.InlineKeyboardButton(
+        f"{_t('view_logs')}", callback_data=AIChatCBT.VIEW_LOGS))
     # Language toggle
     kb.row(
         telebot.types.InlineKeyboardButton(
@@ -3252,7 +3999,9 @@ def _core_keyboard() -> telebot.types.InlineKeyboardMarkup:
            telebot.types.InlineKeyboardButton(
                f"\u23f1 {_t('timeout_label')}", callback_data=AIChatCBT.EDIT_TIMEOUT))
     kb.row(telebot.types.InlineKeyboardButton(
-        f"\U0001f310 {_t('provider_label')}", callback_data=AIChatCBT.EDIT_PROVIDER))
+        f"\U0001f310 {_t('provider_label')}", callback_data=AIChatCBT.EDIT_PROVIDER),
+        telebot.types.InlineKeyboardButton(
+        f"\U0001f9ea {_t('test_model')}", callback_data=AIChatCBT.TEST_MODEL))
     config = load_config()
     budget_on = budget_enabled(config)
     kb.row(telebot.types.InlineKeyboardButton(
@@ -3289,6 +4038,10 @@ def _responder_keyboard() -> telebot.types.InlineKeyboardMarkup:
     kb.row(telebot.types.InlineKeyboardButton(
         f"{'✅' if forward else '❌'} {_t('forward_questions')}",
         callback_data=AIChatCBT.TOGGLE_FORWARD))
+    notify_std = config.getboolean("Forwarding", "notify_on_standard", fallback=False)
+    kb.row(telebot.types.InlineKeyboardButton(
+        f"{'✅' if notify_std else '❌'} {_t('notify_standard_label')}",
+        callback_data=AIChatCBT.TOGGLE_NOTIFY_STANDARD))
     kb.row(telebot.types.InlineKeyboardButton(
         f"{'✅' if list_products else '❌'} {_t('list_products')}",
         callback_data=AIChatCBT.TOGGLE_LIST_PRODUCTS))
@@ -3409,6 +4162,8 @@ def _sales_keyboard() -> telebot.types.InlineKeyboardMarkup:
         f"{'✅' if faq_on else '❌'} {_t('faq')}", callback_data=AIChatCBT.TOGGLE_FAQ),
         telebot.types.InlineKeyboardButton(
         f"\U0001f4d6 {_t('manage_faq')}", callback_data=AIChatCBT.MANAGE_FAQ))
+    kb.row(telebot.types.InlineKeyboardButton(
+        f"\U0001f4e6 {_t('product_catalog')}", callback_data=AIChatCBT.MANAGE_PRODUCTS))
     kb.row(telebot.types.InlineKeyboardButton(
         f"\u25c0\ufe0f {_t('back')}", callback_data=AIChatCBT.BACK_TO_MAIN))
     return kb
@@ -3756,6 +4511,7 @@ def _promos_keyboard() -> telebot.types.InlineKeyboardMarkup:
 # --- Telegram Handler Registration ---
 
 _safe_edit_bot = None
+_cardinal_ref = None  # Set in _pre_init for sync operations
 
 def _safe_edit_message_text(*args, **kwargs):
     """Wrapper around bot.edit_message_text that swallows the harmless
@@ -3785,6 +4541,18 @@ def init(c: Cardinal) -> None:
     global _safe_edit_bot
     bot = c.telegram.bot
     _safe_edit_bot = bot
+
+    # --- One-shot config migration: rewrite stale English holding_message
+    # saved by older plugin versions to the new RU default. Safe to run on
+    # every startup — only touches the file if the value matches the old EN.
+    try:
+        cfg_path = Path("configs") / "ai_chat_plugin.cfg"
+        if not cfg_path.exists():
+            cfg_path = Path("storage") / "ai_chat_plugin.cfg"
+        if cfg_path.exists():
+            reset_holding_message_to_default(cfg_path)
+    except Exception as e:
+        logger.debug(f"{LOGGER_PREFIX} holding_message migration skipped: {e}")
 
     @bot.callback_query_handler(func=lambda call: call.data == AIChatCBT.SETTINGS_MENU)
     def _open_settings_menu(call: telebot.types.CallbackQuery) -> None:
@@ -3827,6 +4595,18 @@ def init(c: Cardinal) -> None:
     @bot.callback_query_handler(func=lambda call: call.data == AIChatCBT.TOGGLE_FORWARD)
     def _toggle_forward(call: telebot.types.CallbackQuery) -> None:
         _toggle_setting("Forwarding", "forward_non_standard")
+        _safe_edit_message_text(
+            _format_responder_settings(),
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=_responder_keyboard(),
+            parse_mode="HTML",
+        )
+        bot.answer_callback_query(call.id, _t("setting_changed"))
+
+    @bot.callback_query_handler(func=lambda call: call.data == AIChatCBT.TOGGLE_NOTIFY_STANDARD)
+    def _toggle_notify_standard(call: telebot.types.CallbackQuery) -> None:
+        _toggle_setting("Forwarding", "notify_on_standard")
         _safe_edit_message_text(
             _format_responder_settings(),
             call.message.chat.id,
@@ -4077,9 +4857,10 @@ def init(c: Cardinal) -> None:
 
     @bot.callback_query_handler(func=lambda call: call.data == AIChatCBT.EDIT_PROVIDER)
     def _edit_provider(call: telebot.types.CallbackQuery) -> None:
-        """Show provider selection keyboard."""
+        """Show provider selection keyboard (built-in + custom providers)."""
         config = load_config()
         current_provider = get_provider(config)
+        custom_providers = _load_custom_providers()
         kb = telebot.types.InlineKeyboardMarkup()
         for prov_key in PROVIDERS:
             icon = "\u2705 " if prov_key == current_provider else ""
@@ -4088,10 +4869,24 @@ def init(c: Cardinal) -> None:
                 f"{icon}{label}",
                 callback_data=f"{AIChatCBT.SELECT_PROVIDER}:{prov_key}",
             ))
+        for prov_key in custom_providers:
+            icon = "\u2705 " if prov_key == current_provider else ""
+            kb.row(telebot.types.InlineKeyboardButton(
+                f"{icon}\U0001f527 {prov_key}",
+                callback_data=f"{AIChatCBT.SELECT_PROVIDER}:{prov_key}",
+            ))
+        kb.row(telebot.types.InlineKeyboardButton(
+            f"\u2795 {_t('cprovider_add')}", callback_data=AIChatCBT.ADD_CPROVIDER))
+        kb.row(telebot.types.InlineKeyboardButton(
+            f"\U0001f5d1 {_t('cprovider_manage')}", callback_data=AIChatCBT.MANAGE_CPROVIDERS))
         kb.row(telebot.types.InlineKeyboardButton(
             f"\u25c0\ufe0f {_t('back')}", callback_data=AIChatCBT.CATEGORY_CORE))
+        custom_note = (
+            f"\n\n\U0001f527 {_t('cprovider_note', count=len(custom_providers))}"
+            if custom_providers else ""
+        )
         _safe_edit_message_text(
-            f"<b>{_t('select_provider')}</b>",
+            f"<b>{_t('select_provider')}</b>{custom_note}",
             call.message.chat.id,
             call.message.message_id,
             reply_markup=kb,
@@ -4105,8 +4900,12 @@ def init(c: Cardinal) -> None:
     def _select_provider(call: telebot.types.CallbackQuery) -> None:
         """Save selected provider to config."""
         provider_name = call.data[len(f"{AIChatCBT.SELECT_PROVIDER}:"):]
-        if provider_name in PROVIDERS:
+        if provider_name in PROVIDERS or provider_name in _load_custom_providers():
             _set_setting("General", "provider", provider_name)
+            logger.info(f"{LOGGER_PREFIX} провайдер изменён на {provider_name}")
+        else:
+            bot.answer_callback_query(call.id, _t("unknown_provider"), show_alert=True)
+            return
         _safe_edit_message_text(
             _format_core_settings(),
             call.message.chat.id,
@@ -4115,19 +4914,82 @@ def init(c: Cardinal) -> None:
             parse_mode="HTML",
         )
         model_hints = {
-            "openrouter": "openai/gpt-3.5-turbo, anthropic/claude-3-sonnet",
+            "openrouter": "openai/gpt-3.5-turbo, z-ai/glm-5.2:free",
             "openai": "gpt-4o, gpt-4o-mini, gpt-3.5-turbo",
             "gemini": "gemini-1.5-flash, gemini-1.5-pro",
             "deepseek": "deepseek-chat, deepseek-coder",
             "anthropic": "claude-3-sonnet-20240229, claude-3-haiku-20240307",
         }
         hint = model_hints.get(provider_name, "")
+        if not hint:
+            saved_models = get_custom_provider_models(provider_name)
+            hint = ", ".join(saved_models[:3]) if saved_models else "-"
         alert_text = (
-            f"Provider changed to {provider_name}.\n"
-            f"Don't forget to also set the correct model name for this provider.\n"
-            f"Examples: {hint}"
+            f"{_t('provider_changed_to')} {provider_name}.\n"
+            f"{_t('provider_set_model_hint')}\n"
+            f"{_t('provider_examples')}: {hint}"
         )
         bot.answer_callback_query(call.id, alert_text, show_alert=True)
+
+    # --- Custom providers management ---
+
+    @bot.callback_query_handler(func=lambda call: call.data == AIChatCBT.MANAGE_CPROVIDERS)
+    def _manage_cproviders(call: telebot.types.CallbackQuery) -> None:
+        """List custom providers with delete buttons and an add button."""
+        custom_providers = _load_custom_providers()
+        current_provider = get_provider(load_config())
+        kb = telebot.types.InlineKeyboardMarkup()
+        for prov_key in custom_providers:
+            models_n = len(get_custom_provider_models(prov_key))
+            mark = " \u2b50" if prov_key == current_provider else ""
+            kb.row(telebot.types.InlineKeyboardButton(
+                f"\u274c {prov_key} ({models_n}){mark}",
+                callback_data=f"{AIChatCBT.REMOVE_CPROVIDER_PREFIX}{prov_key}",
+            ))
+        kb.row(telebot.types.InlineKeyboardButton(
+            f"\u2795 {_t('cprovider_add')}", callback_data=AIChatCBT.ADD_CPROVIDER))
+        kb.row(telebot.types.InlineKeyboardButton(
+            f"\u25c0\ufe0f {_t('back')}", callback_data=AIChatCBT.EDIT_PROVIDER))
+        text = (
+            f"<b>{_t('cprovider_manage')}</b>\n\n"
+            + (_t("cprovider_delete_hint") if custom_providers else _t("no_custom_providers"))
+        )
+        _safe_edit_message_text(
+            text, call.message.chat.id, call.message.message_id,
+            reply_markup=kb, parse_mode="HTML",
+        )
+        bot.answer_callback_query(call.id)
+
+    @bot.callback_query_handler(
+        func=lambda call: call.data.startswith(AIChatCBT.REMOVE_CPROVIDER_PREFIX)
+    )
+    def _remove_cprovider(call: telebot.types.CallbackQuery) -> None:
+        """Delete a custom provider; reset to openrouter if it was active."""
+        prov_key = call.data[len(AIChatCBT.REMOVE_CPROVIDER_PREFIX):]
+        providers = _load_custom_providers()
+        if prov_key in providers:
+            del providers[prov_key]
+            _save_custom_providers(providers)
+            logger.info(f"{LOGGER_PREFIX} кастомный провайдер удалён: {prov_key}")
+            if get_provider(load_config()) == prov_key:
+                _set_setting("General", "provider", "openrouter")
+                logger.info(f"{LOGGER_PREFIX} активный провайдер сброшен на openrouter")
+            bot.answer_callback_query(call.id, _t("cprovider_removed", name=prov_key))
+        else:
+            bot.answer_callback_query(call.id)
+        _manage_cproviders(call)
+
+    @bot.callback_query_handler(func=lambda call: call.data == AIChatCBT.ADD_CPROVIDER)
+    def _add_cprovider(call: telebot.types.CallbackQuery) -> None:
+        """Start the add-custom-provider wizard: step 1 — name."""
+        _set_pending_input(call.from_user.id, ("add_cprovider_name",))
+        bot.send_message(
+            call.message.chat.id,
+            _t("enter_cprovider_name"),
+            parse_mode="HTML",
+            reply_markup=telebot.types.ForceReply(selective=True),
+        )
+        bot.answer_callback_query(call.id)
 
     # --- Prompt preset selection handlers ---
 
@@ -4514,6 +5376,137 @@ def init(c: Cardinal) -> None:
         )
         bot.answer_callback_query(call.id, _t("removed", item=name))
 
+    # --- Product Catalog handlers ---
+
+    @bot.callback_query_handler(func=lambda call: call.data == AIChatCBT.MANAGE_PRODUCTS)
+    def _manage_products(call: telebot.types.CallbackQuery) -> None:
+        config = load_config()
+        products = _get_product_catalog(config)
+        kb = telebot.types.InlineKeyboardMarkup()
+        kb.row(telebot.types.InlineKeyboardButton(
+            f"🔄 {_t('sync_products')}", callback_data=AIChatCBT.SYNC_PRODUCTS))
+        for p in products:
+            kb.row(telebot.types.InlineKeyboardButton(
+                f"❌ {p['title'][:40]}",
+                callback_data=f"{AIChatCBT.REMOVE_PRODUCT_PREFIX}{p['title']}"))
+        kb.row(telebot.types.InlineKeyboardButton(
+            f"➕ {_t('add_product')}", callback_data=AIChatCBT.ADD_PRODUCT))
+        kb.row(telebot.types.InlineKeyboardButton(
+            f"\u25c0\ufe0f {_t('back')}", callback_data=AIChatCBT.CATEGORY_SALES))
+        # Show auto-loaded lot count
+        auto_count = len(_lot_details_cache) if _lot_details_cache else 0
+        text = f"<b>{_t('product_catalog_mgmt')}</b>\n\n"
+        if auto_count > 0:
+            text += f"📥 Авто-загрузка: <b>{auto_count}</b> лотов с FunPay\n"
+        if products:
+            text += f"\n📦 <b>Ручные товары ({len(products)}):</b>\n"
+            for p in products:
+                price_str = f" — {p['price']}" if p.get('price') else ""
+                text += f"  • <b>{p['title']}</b>{price_str}\n"
+                if p.get('description'):
+                    text += f"    <i>{p['description'][:80]}</i>\n"
+        else:
+            text += f"\n{_t('product_empty')}"
+        _safe_edit_message_text(text, call.message.chat.id,
+            call.message.message_id, reply_markup=kb, parse_mode="HTML")
+        bot.answer_callback_query(call.id)
+
+    @bot.callback_query_handler(func=lambda call: call.data == AIChatCBT.ADD_PRODUCT)
+    def _add_product(call: telebot.types.CallbackQuery) -> None:
+        _set_pending_input(call.from_user.id, "add_product_name")
+        bot.send_message(
+            call.message.chat.id,
+            _t("enter_product_name"),
+            reply_markup=telebot.types.ForceReply(selective=True),
+        )
+        bot.answer_callback_query(call.id)
+
+    @bot.callback_query_handler(
+        func=lambda call: call.data.startswith(AIChatCBT.REMOVE_PRODUCT_PREFIX)
+    )
+    def _remove_product(call: telebot.types.CallbackQuery) -> None:
+        name = call.data[len(AIChatCBT.REMOVE_PRODUCT_PREFIX):]
+        _remove_product_from_catalog(name)
+        _manage_products(call)
+        bot.answer_callback_query(call.id, _t("product_removed", name=name))
+
+    @bot.callback_query_handler(func=lambda call: call.data == AIChatCBT.SYNC_PRODUCTS)
+    def _sync_products(call: telebot.types.CallbackQuery) -> None:
+        """Manually sync products from Cardinal (force refresh lot cache)."""
+        global _lot_details_cache, _lot_details_cache_time
+        bot.answer_callback_query(call.id, _t("syncing_products"))
+        # Clear cache to force reload
+        _lot_details_cache = []
+        _lot_details_cache_time = 0.0
+        _lot_pages_cache.clear()
+        _lot_pages_cache_time = 0.0
+        if _cardinal_ref is not None:
+            # Diagnostic: dump what account/profile has
+            diag_lines = []
+            prof = getattr(_cardinal_ref, "profile", None)
+            diag_lines.append(f"profile: {type(prof).__name__ if prof else 'None'}")
+            if prof and hasattr(prof, "get_lots"):
+                try:
+                    p_lots = prof.get_lots()
+                    diag_lines.append(f"  profile.get_lots(): {len(p_lots) if p_lots else 0} шт.")
+                    if p_lots:
+                        first = p_lots[0]
+                        diag_lines.append(f"  first lot: {type(first).__name__} title={getattr(first, 'title', '?')[:30]} price={getattr(first, 'price', '?')}")
+                except Exception as e:
+                    diag_lines.append(f"  profile.get_lots() ERROR: {e}")
+            acc = getattr(_cardinal_ref, "account", None)
+            diag_lines.append(f"account: {type(acc).__name__ if acc else 'None'}")
+            if acc:
+                diag_lines.append(f"  has get_lots: {hasattr(acc, 'get_lots')}")
+                diag_lines.append(f"  has lots attr: {hasattr(acc, 'lots')}")
+                if hasattr(acc, "get_lots"):
+                    try:
+                        test_lots = acc.get_lots()
+                        diag_lines.append(f"  account.get_lots(): {len(test_lots) if test_lots else 0} шт.")
+                    except Exception as e:
+                        diag_lines.append(f"  account.get_lots() ERROR: {e}")
+            try:
+                details = _get_lot_details(_cardinal_ref)
+                diag_lines.append(f"\nresult: {len(details)} lots")
+                if details:
+                    for d in details[:5]:
+                        diag_lines.append(f"  • {d.get('title', '?')[:50]} | {d.get('price', '?')}")
+                result_text = "\n".join(diag_lines)
+                if details:
+                    _safe_edit_message_text(
+                        f"✅ {_t('sync_products_done', n=len(details))}\n\n<pre>{result_text}</pre>",
+                        call.message.chat.id, call.message.message_id,
+                        reply_markup=telebot.types.InlineKeyboardMarkup().add(
+                            telebot.types.InlineKeyboardButton(
+                                f"\u25c0\ufe0f {_t('back')}",
+                                callback_data=AIChatCBT.CATEGORY_SALES)),
+                        parse_mode="HTML",
+                    )
+                else:
+                    _safe_edit_message_text(
+                        f"⚠️ {_t('sync_products_empty')}\n\n<pre>{result_text}</pre>",
+                        call.message.chat.id, call.message.message_id,
+                        reply_markup=telebot.types.InlineKeyboardMarkup().add(
+                            telebot.types.InlineKeyboardButton(
+                                f"\u25c0\ufe0f {_t('back')}",
+                                callback_data=AIChatCBT.CATEGORY_SALES)),
+                        parse_mode="HTML",
+                    )
+            except Exception as e:
+                logger.error(f"{LOGGER_PREFIX} sync products failed: {e}", exc_info=True)
+                diag_lines.append(f"\nEXCEPTION: {e}")
+                _safe_edit_message_text(
+                    f"❌ Ошибка:\n<pre>{'\n'.join(diag_lines)}</pre>",
+                    call.message.chat.id, call.message.message_id,
+                    parse_mode="HTML",
+                )
+        else:
+            _safe_edit_message_text(
+                "⚠️ Cardinal не инициализирован. Перезапустите бота.",
+                call.message.chat.id, call.message.message_id,
+                parse_mode="HTML",
+            )
+
     @bot.callback_query_handler(func=lambda call: call.data == AIChatCBT.MANAGE_STOPWORDS)
     def _manage_stopwords(call: telebot.types.CallbackQuery) -> None:
         _safe_edit_message_text(
@@ -4679,6 +5672,24 @@ def init(c: Cardinal) -> None:
         )
         bot.answer_callback_query(call.id, _t("stats_reset"))
 
+    @bot.callback_query_handler(func=lambda call: call.data == AIChatCBT.VIEW_LOGS)
+    def _view_logs(call: telebot.types.CallbackQuery) -> None:
+        entries = _get_log_entries(30)
+        if not entries:
+            text = f"<b>{_t('logs_title')}</b>\n\n{_t('logs_empty')}"
+        else:
+            text = f"<b>{_t('logs_title')}</b>\n\n" + "\n".join(entries)
+        kb = telebot.types.InlineKeyboardMarkup()
+        kb.row(telebot.types.InlineKeyboardButton(
+            f"\U0001f504 {_t('view_logs')}", callback_data=AIChatCBT.VIEW_LOGS))
+        kb.row(telebot.types.InlineKeyboardButton(
+            f"\u2b05\ufe0f {_t('back')}", callback_data=AIChatCBT.SETTINGS_MENU))
+        _safe_edit_message_text(
+            text, call.message.chat.id, call.message.message_id,
+            reply_markup=kb, parse_mode="HTML",
+        )
+        bot.answer_callback_query(call.id)
+
     # --- Edit buttons for existing settings ---
 
     @bot.callback_query_handler(func=lambda call: call.data == AIChatCBT.VIEW_SETTINGS)
@@ -4694,12 +5705,114 @@ def init(c: Cardinal) -> None:
 
     @bot.callback_query_handler(func=lambda call: call.data == AIChatCBT.EDIT_MODEL)
     def _edit_model(call: telebot.types.CallbackQuery) -> None:
+        """Show model preset menu for the active provider (+ manual input)."""
+        config = load_config()
+        provider = get_provider(config)
+        current_model = get_model(config)
+        entries = _model_menu_entries(provider)
+        kb = telebot.types.InlineKeyboardMarkup()
+        for idx, (_, label) in enumerate(entries):
+            icon = "\u2705 " if entries[idx][0] == current_model else ""
+            kb.row(telebot.types.InlineKeyboardButton(
+                f"{icon}{label}", callback_data=f"{AIChatCBT.SELECT_MODEL_PRESET}:{idx}"))
+        kb.row(telebot.types.InlineKeyboardButton(
+            f"\u270d\ufe0f {_t('model_manual')}", callback_data=AIChatCBT.MODEL_MANUAL))
+        kb.row(telebot.types.InlineKeyboardButton(
+            f"\u25c0\ufe0f {_t('back')}", callback_data=AIChatCBT.CATEGORY_CORE))
+        header = f"<b>{_t('select_model')}</b>\n\U0001f916 {_t('model_label')}: <code>{current_model}</code>"
+        _safe_edit_message_text(
+            header,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+        bot.answer_callback_query(call.id)
+
+    @bot.callback_query_handler(
+        func=lambda call: call.data.startswith(f"{AIChatCBT.SELECT_MODEL_PRESET}:")
+    )
+    def _select_model_preset(call: telebot.types.CallbackQuery) -> None:
+        """Save a preset model, then auto-test it."""
+        provider = get_provider(load_config())
+        entries = _model_menu_entries(provider)
+        try:
+            idx = int(call.data[len(f"{AIChatCBT.SELECT_MODEL_PRESET}:"):])
+        except ValueError:
+            bot.answer_callback_query(call.id)
+            return
+        if idx < 0 or idx >= len(entries):
+            bot.answer_callback_query(call.id)
+            return
+        model = entries[idx][0]
+        _set_setting("General", "model", model)
+        logger.info(f"{LOGGER_PREFIX} модель изменена на {model} (провайдер {provider})")
+        _safe_edit_message_text(
+            f"\U0001f504 {_t('model_testing', model=model)}",
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode="HTML",
+        )
+        ok, reply, tokens, err_msg = run_model_test(model, provider)
+        result_kb = telebot.types.InlineKeyboardMarkup()
+        result_kb.row(telebot.types.InlineKeyboardButton(
+            f"\U0001f916 {_t('model_label')}", callback_data=AIChatCBT.EDIT_MODEL))
+        result_kb.row(telebot.types.InlineKeyboardButton(
+            f"\u25c0\ufe0f {_t('back')}", callback_data=AIChatCBT.CATEGORY_CORE))
+        _safe_edit_message_text(
+            _model_test_text(model, provider, ok, reply, tokens, err_msg),
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=result_kb,
+            parse_mode="HTML",
+        )
+        bot.answer_callback_query(call.id)
+
+    @bot.callback_query_handler(func=lambda call: call.data == AIChatCBT.MODEL_MANUAL)
+    def _model_manual_input(call: telebot.types.CallbackQuery) -> None:
+        """Ask the user to type a model name manually."""
         _set_pending_input(call.from_user.id, "model")
         bot.send_message(
             call.message.chat.id,
             _t("enter_model"),
             parse_mode="HTML",
             reply_markup=telebot.types.ForceReply(selective=True),
+        )
+        bot.answer_callback_query(call.id)
+
+    @bot.callback_query_handler(func=lambda call: call.data == AIChatCBT.TEST_MODEL)
+    def _test_model_button(call: telebot.types.CallbackQuery) -> None:
+        """Run model connectivity test from a dedicated button."""
+        config = load_config()
+        provider = get_provider(config)
+        model = get_model(config)
+        if not model:
+            bot.send_message(
+                call.message.chat.id,
+                _t('test_no_key'),
+                parse_mode="HTML",
+            )
+            bot.answer_callback_query(call.id)
+            return
+        bot.send_message(
+            call.message.chat.id,
+            f"{_t('test_testing')} ({provider}, {model})",
+            parse_mode="HTML",
+        )
+        ok, reply, tokens, err_msg = run_model_test(model, provider)
+        result_kb = telebot.types.InlineKeyboardMarkup()
+        result_kb.row(telebot.types.InlineKeyboardButton(
+            f"\U0001f9ea {_t('test_model')}", callback_data=AIChatCBT.TEST_MODEL))
+        result_kb.row(telebot.types.InlineKeyboardButton(
+            f"\U0001f916 {_t('model_label')}", callback_data=AIChatCBT.EDIT_MODEL))
+        result_kb.row(telebot.types.InlineKeyboardButton(
+            f"\u25c0\ufe0f {_t('back')}", callback_data=AIChatCBT.CATEGORY_CORE))
+        _safe_edit_message_text(
+            _model_test_text(model, provider, ok, reply, tokens, err_msg),
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=result_kb,
+            parse_mode="HTML",
         )
         bot.answer_callback_query(call.id)
 
@@ -5082,6 +6195,48 @@ def init(c: Cardinal) -> None:
             )
             return
 
+        # --- Product catalog: 3-step input (name → price → desc) ---
+        if field == "add_product_name":
+            _set_pending_input(user_id, ("add_product_price", value))
+            bot.send_message(
+                msg.chat.id,
+                _t("enter_product_price", name=value),
+                parse_mode="HTML",
+                reply_markup=telebot.types.ForceReply(selective=True),
+            )
+            return
+
+        if isinstance(field, tuple) and field[0] == "add_product_price":
+            product_name = field[1]
+            _set_pending_input(user_id, ("add_product_desc", product_name, value))
+            bot.send_message(
+                msg.chat.id,
+                _t("enter_product_desc", name=product_name, price=value),
+                parse_mode="HTML",
+                reply_markup=telebot.types.ForceReply(selective=True),
+            )
+            return
+
+        if isinstance(field, tuple) and field[0] == "add_product_desc":
+            product_name = field[1]
+            product_price = field[2]
+            _add_product_to_catalog(product_name, product_price, value)
+            # Clear cache so new product loads immediately
+            global _lot_details_cache, _lot_details_cache_time
+            _lot_details_cache = []
+            _lot_details_cache_time = 0.0
+            kb = telebot.types.InlineKeyboardMarkup()
+            kb.row(telebot.types.InlineKeyboardButton(
+                f"\u2b05\ufe0f {_t('back_to_settings')}",
+                callback_data=AIChatCBT.CATEGORY_SALES))
+            bot.reply_to(
+                msg,
+                f"\u2705 {_t('product_added', name=product_name)}",
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+            return
+
         # Handle two-step promo input
         if field == "add_promo_code":
             _set_pending_input(user_id, ("add_promo_desc", value))
@@ -5136,6 +6291,87 @@ def init(c: Cardinal) -> None:
             bot.reply_to(
                 msg,
                 f"\u2705 {_t('added_to_blacklist', user=value)}",
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+            return
+
+        # Handle custom provider wizard - step 1: name
+        if isinstance(field, tuple) and field[0] == "add_cprovider_name":
+            name = value.strip().lower()
+            if not re.match(r'^[a-z0-9_]{2,20}$', name):
+                bot.reply_to(msg, f"\u274c {_t('invalid_cprovider_name')}")
+                return
+            if name in PROVIDERS:
+                bot.reply_to(msg, f"\u274c {_t('cprovider_reserved')}")
+                return
+            if name in _load_custom_providers():
+                bot.reply_to(msg, f"\u274c {_t('cprovider_exists')}")
+                return
+            _set_pending_input(user_id, ("add_cprovider_url", name))
+            bot.send_message(
+                msg.chat.id,
+                _t("enter_cprovider_url", name=name),
+                parse_mode="HTML",
+                reply_markup=telebot.types.ForceReply(selective=True),
+            )
+            return
+
+        # Handle custom provider wizard - step 2: base URL
+        if isinstance(field, tuple) and field[0] == "add_cprovider_url":
+            name = field[1]
+            if not value.startswith(("http://", "https://")):
+                bot.reply_to(msg, f"\u274c {_t('invalid_cprovider_url')}")
+                return
+            _set_pending_input(user_id, ("add_cprovider_models", name, value))
+            bot.send_message(
+                msg.chat.id,
+                _t("enter_cprovider_models"),
+                parse_mode="HTML",
+                reply_markup=telebot.types.ForceReply(selective=True),
+            )
+            return
+
+        # Handle custom provider wizard - step 3: models (optional)
+        if isinstance(field, tuple) and field[0] == "add_cprovider_models":
+            name, base_url = field[1], field[2]
+            models = [] if value == "-" else [
+                m.strip() for m in re.split(r"[,\n]", value) if m.strip()]
+            _set_pending_input(user_id, ("add_cprovider_key", name, base_url, models))
+            bot.send_message(
+                msg.chat.id,
+                _t("enter_cprovider_key"),
+                parse_mode="HTML",
+                reply_markup=telebot.types.ForceReply(selective=True),
+            )
+            return
+
+        # Handle custom provider wizard - step 4: API key (optional) → save
+        if isinstance(field, tuple) and field[0] == "add_cprovider_key":
+            name, base_url, models = field[1], field[2], field[3]
+            api_key_value = "" if value == "-" else value
+            providers = _load_custom_providers()
+            providers[name] = {
+                "base_url": base_url,
+                "models": models,
+                "api_key": api_key_value,
+            }
+            _save_custom_providers(providers)
+            logger.info(
+                f"{LOGGER_PREFIX} добавлен кастомный провайдер {name} "
+                f"({base_url}), моделей: {len(models)}, "
+                f"ключ: {'есть' if api_key_value else 'общий'}")
+            kb = telebot.types.InlineKeyboardMarkup()
+            kb.row(telebot.types.InlineKeyboardButton(
+                f"\u2705 {_t('cprovider_make_active')}",
+                callback_data=f"{AIChatCBT.SELECT_PROVIDER}:{name}"))
+            kb.row(telebot.types.InlineKeyboardButton(
+                f"\U0001f310 {_t('provider_label')}", callback_data=AIChatCBT.EDIT_PROVIDER))
+            bot.reply_to(
+                msg,
+                f"\u2705 {_t('cprovider_added', name=name)}\n"
+                f"\U0001f4e1 {base_url}\n"
+                f"\U0001f916 {_t('cprovider_models_count', count=len(models))}",
                 parse_mode="HTML",
                 reply_markup=kb,
             )
@@ -5328,10 +6564,49 @@ def init(c: Cardinal) -> None:
                 bot.reply_to(msg, f"\u274c {_t('invalid_number')}")
                 return
 
+        # Model input: save, then run the connection test automatically
+        if field == "model":
+            _set_setting("General", "model", value)
+            provider = get_provider(load_config())
+            logger.info(f"{LOGGER_PREFIX} модель изменена на {value} (провайдер {provider})")
+            bot.reply_to(msg, f"\U0001f504 {_t('model_testing', model=value)}", parse_mode="HTML")
+            ok, reply, tokens, err_msg = run_model_test(value, provider)
+            kb = telebot.types.InlineKeyboardMarkup()
+            kb.row(telebot.types.InlineKeyboardButton(
+                f"\U0001f916 {_t('model_label')}", callback_data=AIChatCBT.EDIT_MODEL))
+            kb.row(telebot.types.InlineKeyboardButton(
+                f"\u25c0\ufe0f {_t('back_to_settings')}", callback_data=AIChatCBT.SETTINGS_MENU))
+            bot.reply_to(
+                msg,
+                _model_test_text(value, provider, ok, reply, tokens, err_msg),
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+            return
+
+        # API key input: save without echoing the value back
+        if field == "api_key":
+            _set_setting("General", "openrouter_api_key", value)
+            logger.info(
+                f"{LOGGER_PREFIX} API ключ обновлён "
+                f"(провайдер {get_provider(load_config())}, длина {len(value)})")
+            kb = telebot.types.InlineKeyboardMarkup()
+            kb.row(
+                telebot.types.InlineKeyboardButton(
+                    f"\u2b05\ufe0f {_t('back_to_settings')}", callback_data=AIChatCBT.SETTINGS_MENU
+                )
+            )
+            bot.reply_to(
+                msg,
+                f"\u2705 {_t('setting_updated', field=field)}",
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+            return
+
         # Map field names to config sections and keys
+        # (model и api_key обрабатываются выше отдельными ветками)
         field_map = {
-            "model": ("General", "model"),
-            "api_key": ("General", "openrouter_api_key"),
             "system_prompt": ("General", "system_prompt"),
             "holding_message": ("Forwarding", "holding_message"),
             "max_history_messages": ("General", "max_history_messages"),
@@ -5378,6 +6653,8 @@ def open_settings(c: Cardinal, msg: telebot.types.Message) -> None:
 
 def _pre_init(c: Cardinal) -> None:
     """Pre-init: register TG handlers, /aichat command, settings page callback, guide, test."""
+    global _cardinal_ref
+    _cardinal_ref = c
     _load_language_from_config()
     init(c)
     tg = getattr(c, "telegram", None)
@@ -5429,10 +6706,10 @@ def _pre_init(c: Cardinal) -> None:
     @bot.message_handler(commands=["aichat_test"])
     def _cmd_test(msg: telebot.types.Message) -> None:
         config = load_config()
-        api_key = get_api_key(config)
+        provider = get_provider(config)
         model = get_model(config)
 
-        if not api_key or api_key == "YOUR_API_KEY_HERE":
+        if not api_key_present_for(provider):
             bot.send_message(
                 msg.chat.id,
                 f"\u274c <b>{_t('test_no_key')}</b>",
@@ -5440,27 +6717,26 @@ def _pre_init(c: Cardinal) -> None:
             )
             return
 
-        bot.send_message(msg.chat.id, f"\U0001f504 {_t('test_testing')}")
+        bot.send_message(
+            msg.chat.id,
+            f"\U0001f504 {_t('test_testing')} ({provider}, {model})")
 
-        # Test with a simple fake message
-        test_prompt = "You are a test assistant. Reply with exactly: TEST_OK"
-        provider = get_provider(config)
-        test_response, tokens = call_ai_api(
-            api_key, model, test_prompt, "__test__",
-            "Hello, is this working?", timeout=15, provider=provider
-        )
+        ok, test_response, tokens, err_msg = run_model_test(model, provider)
 
-        if test_response is not None:
+        if ok:
             result = (
                 f"\u2705 <b>{_t('test_passed')}</b>\n\n"
+                f"\U0001f310 Provider: <code>{provider}</code>\n"
                 f"\U0001f916 {_t('model_label')}: <code>{model}</code>\n"
                 f"\U0001f4ca {_t('tokens_used')}: {tokens}\n"
-                f"\U0001f4ac AI: <i>{test_response[:200]}</i>"
+                f"\U0001f4ac AI: <i>{(test_response or '')[:200]}</i>"
             )
         else:
             result = (
                 f"\u274c <b>{_t('test_failed')}</b>\n\n"
-                f"\U0001f916 {_t('model_label')}: <code>{model}</code>"
+                f"\U0001f310 Provider: <code>{provider}</code>\n"
+                f"\U0001f916 {_t('model_label')}: <code>{model}</code>\n"
+                f"\u26a0\ufe0f {err_msg or 'Неизвестная ошибка'}"
             )
 
         bot.send_message(msg.chat.id, result, parse_mode="HTML")
