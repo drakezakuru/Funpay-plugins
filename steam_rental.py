@@ -116,11 +116,13 @@ if TYPE_CHECKING:
 # ══════════════════════════════════════════════════════════════════════════════
 
 DONATION_ENABLED = True                # True = 1 (показывать баннер), False = 0
-DONATION_SHOW_ON_START = False         # True = 1 (слать при старте плагина)
+DONATION_SHOW_ON_START = True         # True = 1 (слать при старте плагина)
 DONATION_DAILY_ENABLED = True          # True = 1 (напоминание раз в сутки)
 DONATION_DAILY_HOUR = 16               # час напоминания (0-23, МСК)
 DONATION_CALLBACK_PREFIX = "srl_dn"    # префикс колбэков кнопок баннера
 DONATION_PLUGIN_NAME = "Steam Rental"  # имя плагина в шапке баннера
+AUTHOR_CHANNEL_URL = "https://t.me/pluginsdrake"  # канал с другими плагинами автора
+AUTHOR_CHANNEL_USERNAME = "@pluginsdrake"
 
 _donation_thread: "threading.Thread | None" = None
 _donation_cardinal = None
@@ -162,6 +164,11 @@ def _donation_banner_kb():
     """Кнопки-приколы под баннером."""
     from telebot import types as tbtypes  # type: ignore
     kb = tbtypes.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        tbtypes.InlineKeyboardButton(
+            f"📦 Другие плагины автора ({AUTHOR_CHANNEL_USERNAME})",
+            url=AUTHOR_CHANNEL_URL),
+    )
     kb.add(
         tbtypes.InlineKeyboardButton(
             "😢 Я нищий",
@@ -254,6 +261,20 @@ def _donation_reminder_loop(cardinal) -> None:
 
 
 # ── Плагин-метаданные (FPC читает эти константы из файла) ────────────────────
+def _welcome_startup_text() -> str:
+    """Текст приветственного сообщения при первом запуске плагина."""
+    _ver = globals().get("VERSION", "?")
+    return (
+        "✨ <b>" + DONATION_PLUGIN_NAME + "</b> v" + str(_ver) + " запущен!\n\n"
+        "Спасибо что выбрал этот плагин. 🎉\n\n"
+        "📦 <b>Другие плагины автора</b> и обновления — "
+        "в канале " + AUTHOR_CHANNEL_USERNAME + ":\n"
+        '<a href="' + AUTHOR_CHANNEL_URL + '">' + AUTHOR_CHANNEL_URL + '</a>\n\n'
+        "Подписывайся, чтобы не пропустить новые плагины и фичи. "
+        "Если есть идеи/баги — пиши в канал 🙌"
+    )
+
+
 NAME = "Steam Rental"
 VERSION = "2.23.3"
 DESCRIPTION = (
@@ -7751,6 +7772,13 @@ def _handler_pre_init(cardinal: "Cardinal") -> None:
             _start_donation_reminder(cardinal)
     except Exception:
         pass
+    # 📦 Одноразовое приветствие с рекламой канала автора
+    if DONATION_SHOW_ON_START:
+        try:
+            _send_startup_welcome(cardinal)
+        except Exception:
+            logger.debug("startup welcome send failed", exc_info=True)
+
 
     _ensure_storage()
     get_config()
